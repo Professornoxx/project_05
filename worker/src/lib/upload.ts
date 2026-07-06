@@ -43,21 +43,17 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
     mapped.push(result);
   });
 
-  // Determine insert vs update by checking which user_ids already exist,
-  // so the summary reports accurate counts (not just "upserted").
-  const existingIds = new Set<number>();
-  const CHECK_BATCH = 100;
-  const userIds = mapped.map((m) => m.user_id);
-  for (let i = 0; i < userIds.length; i += CHECK_BATCH) {
-    const slice = userIds.slice(i, i + CHECK_BATCH);
-    if (slice.length === 0) continue;
-    const placeholders = slice.map(() => "?").join(",");
-    const res = await env.master_db
-      .prepare(`SELECT user_id FROM users WHERE user_id IN (${placeholders})`)
-      .bind(...slice)
-      .all<{ user_id: number }>();
-    for (const r of res.results) existingIds.add(r.user_id);
-  }
+  // Inserted vs. updated is derived from a total-row-count delta, not a
+  // per-user_id existence check. Checking existence with an IN clause per
+  // row hit two different Cloudflare/D1 limits at this scale (55k+ rows):
+  // the Workers subrequest cap when batched small, and D1's bound-SQL-
+  // variable limit ("too many SQL variables") when batched large. Since
+  // ON CONFLICT DO UPDATE never changes the table's total row count,
+  // (count_after - count_before) is exactly the number of new inserts —
+  // 2 subrequests total regardless of dataset size.
+  const countBefore = await env.master_db
+    .prepare(`SELECT COUNT(*) as c FROM users`)
+    .first<{ c: number }>();
 
   const now = new Date().toISOString();
   const setClause = USER_UPDATE_COLUMNS.map(
@@ -80,17 +76,20 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
       .bind(...bindValues);
   });
 
-  const WRITE_BATCH = 50;
-  let inserted = 0;
-  let updated = 0;
+  // 150 statements at 7 bound params each (1050 total) is confirmed working
+  // against real D1 (deposits sync, 5,591 rows). The `users` table binds 56
+  // params/row, ~8x more per statement, so this is scaled down proportionally.
+  // D1's real limit here doesn't match its documented "100 params/statement"
+  // figure and isn't simply a total-variable-count either — larger batches
+  // fail with "too many SQL variables" in ways that don't scale predictably,
+  // so don't raise this without testing against real D1 data first.
+  const WRITE_BATCH = 20;
+  let successfullyWritten = 0;
   for (let i = 0; i < statements.length; i += WRITE_BATCH) {
     const slice = statements.slice(i, i + WRITE_BATCH);
     try {
       await env.master_db.batch(slice);
-      for (const m of mapped.slice(i, i + WRITE_BATCH)) {
-        if (existingIds.has(m.user_id)) updated++;
-        else inserted++;
-      }
+      successfullyWritten += slice.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       for (const m of mapped.slice(i, i + WRITE_BATCH)) {
@@ -98,6 +97,12 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
       }
     }
   }
+
+  const countAfter = await env.master_db
+    .prepare(`SELECT COUNT(*) as c FROM users`)
+    .first<{ c: number }>();
+  const inserted = (countAfter?.c ?? 0) - (countBefore?.c ?? 0);
+  const updated = successfullyWritten - inserted;
 
   const summary: UploadSummary = {
     sheetsRead,

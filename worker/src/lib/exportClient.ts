@@ -20,18 +20,26 @@ const SOURCE_URL_ENV: Record<Exclude<SourceName, "manual_upload">, keyof Env> = 
   wallet: "WALLET_EXPORT_URL",
 };
 
-// Fetches the export endpoint for the given source over the last 5 days.
-// Confirmed live against the real backend (RuoYi-style admin API): these
-// /export routes are POST-only with a JSON body, and return the .xlsx file
-// directly (content-disposition: attachment) on success. On failure they
-// still answer HTTP 200 with a JSON error envelope {msg, code} — code !== 200
-// means the call failed (auth expired, bad params, etc.), and MUST be
-// treated as an error, not as "zero rows" — a naive content-type check
-// silently swallowed these as empty results in an earlier version of this
-// function, which looked like a successful-but-empty sync.
+// Fetches the export endpoint for the given source over the last N days.
+// Request format confirmed directly from the real frontend's own query
+// string (captured live from their admin panel network tab):
+//   packageId=10&pageNum=1&pageSize=10&useUpiQuery=true&queryDate[0]=...&queryDate[1]=...
+// Date range is queryDate[0]/queryDate[1] (array-bracket params), NOT
+// beginTime/endTime — that mismatch is the likely reason every earlier
+// attempt failed or hung. pageSize is set high here since export should
+// return every matching row, not one UI page of results.
 export async function fetchExportRows(source: Exclude<SourceName, "manual_upload">, env: Env) {
-  const url = env[SOURCE_URL_ENV[source]] as string;
+  const baseUrl = env[SOURCE_URL_ENV[source]] as string;
   const { beginTime, endTime } = syncWindow(env);
+
+  const params = new URLSearchParams();
+  params.set("packageId", env.PACKAGE_ID);
+  params.set("pageNum", "1");
+  params.set("pageSize", "100000");
+  params.set("useUpiQuery", "true");
+  params.set("queryDate[0]", beginTime);
+  params.set("queryDate[1]", endTime);
+  const url = `${baseUrl}?${params.toString()}`;
 
   const token = await getBearerToken(env);
   const startedAt = Date.now();
@@ -51,9 +59,7 @@ export async function fetchExportRows(source: Exclude<SourceName, "manual_upload
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ packageId: Number(env.PACKAGE_ID), beginTime, endTime }),
       signal: controller.signal,
     });
   } catch (err) {

@@ -49,10 +49,29 @@ export async function recordKey(row: Record<string, unknown>): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-const USER_ID_FIELD_CANDIDATES = ["userId", "user_id", "uid", "用户ID", "用户id"];
-const AMOUNT_FIELD_CANDIDATES = ["amount", "money", "总额", "金额"];
-const STATUS_FIELD_CANDIDATES = ["status", "state", "状态"];
+// Field names below are confirmed from real export files (deposit/"Recharge
+// Orders" and withdraw/"walletDetail" sheets, pulled live 2026-07-06):
+// deposit uses userId/orderAmount, withdraw uses UserId/WithDrawAmount —
+// both are kept since real exports are inconsistent about casing per source.
+const USER_ID_FIELD_CANDIDATES = ["userId", "UserId", "user_id", "uid", "用户ID", "用户id"];
+const AMOUNT_FIELD_CANDIDATES = [
+  "amount", "money", "orderAmount", "WithDrawAmount", "ReceivedAmount", "总额", "金额",
+];
+const STATUS_FIELD_CANDIDATES = [
+  "status", "state", "COMPLETE is done",
+  "0 Under review, 1 Payment processing, 2 Completed, 3 Rejected, 4 Failed", "状态",
+];
 const TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"];
+
+// D1's bind() only accepts string/number/null/ArrayBuffer — a raw JS Date
+// (which is what parseAllSheets produces for date cells, via cellDates:true)
+// throws "Type 'object' not supported". Coerce before it ever reaches D1.
+function coerceForBind(value: unknown): string | number | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "number" || typeof value === "string") return value;
+  return String(value);
+}
 
 function pick(row: Record<string, unknown>, candidates: string[]): unknown {
   for (const c of candidates) {
@@ -63,9 +82,9 @@ function pick(row: Record<string, unknown>, candidates: string[]): unknown {
 
 export function extractCommonFields(row: Record<string, unknown>) {
   return {
-    user_id: pick(row, USER_ID_FIELD_CANDIDATES) as number | null,
-    amount: pick(row, AMOUNT_FIELD_CANDIDATES) as number | null,
-    status: pick(row, STATUS_FIELD_CANDIDATES) as string | null,
-    create_time: pick(row, TIME_FIELD_CANDIDATES) as string | null,
+    user_id: coerceForBind(pick(row, USER_ID_FIELD_CANDIDATES)) as number | null,
+    amount: coerceForBind(pick(row, AMOUNT_FIELD_CANDIDATES)) as number | null,
+    status: coerceForBind(pick(row, STATUS_FIELD_CANDIDATES)) as string | null,
+    create_time: coerceForBind(pick(row, TIME_FIELD_CANDIDATES)) as string | null,
   };
 }

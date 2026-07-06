@@ -21,20 +21,18 @@ export async function upsertRows(
 
   const keys = await Promise.all(rows.map((r) => recordKey(r.row)));
 
-  // Find which of these keys are NOT already in the DB — this is the
-  // "missing records" count the sync log reports.
-  const existing = new Set<string>();
-  const BATCH = 100;
-  for (let i = 0; i < keys.length; i += BATCH) {
-    const slice = keys.slice(i, i + BATCH);
-    const placeholders = slice.map(() => "?").join(",");
-    const res = await env.master_db
-      .prepare(`SELECT record_key FROM ${table} WHERE record_key IN (${placeholders})`)
-      .bind(...slice)
-      .all<{ record_key: string }>();
-    for (const r of res.results) existing.add(r.record_key);
-  }
-  const missingBefore = keys.length - existing.size;
+  // "Missing before" is derived from a total-row-count delta (before vs.
+  // after the upsert), not a per-key existence check. Two earlier attempts
+  // failed at scale: checking existence with an IN clause per row hit
+  // Cloudflare's Workers subrequest limit (50/request on Free) when batched
+  // small, and hit D1's bound-SQL-variable limit ("too many SQL variables")
+  // when batched large. A row can only ever be a fresh INSERT or an existing
+  // UPDATE via ON CONFLICT — updates never change the table's total row
+  // count, so (count_after - count_before) is exactly the number of new
+  // records, with just 2 subrequests total regardless of dataset size.
+  const countBefore = await env.master_db
+    .prepare(`SELECT COUNT(*) as c FROM ${table}`)
+    .first<{ c: number }>();
 
   const now = new Date().toISOString();
   const statements = rows.map((r, i) => {
@@ -63,12 +61,30 @@ export async function upsertRows(
       );
   });
 
-  // batch() runs all statements as a single transaction — either every row
-  // in this sync lands, or none do, so a mid-sync failure can't leave the
-  // table with only some of the batch written.
-  for (let i = 0; i < statements.length; i += BATCH) {
-    await env.master_db.batch(statements.slice(i, i + BATCH));
+  // Each .batch() call is one subrequest regardless of how many statements
+  // it contains, and runs them as one transaction — either every row in
+  // this chunk lands, or none do. 150 is empirically proven against real
+  // D1 data (5,591-row deposit sync and 909-row withdraw sync both
+  // succeeded at this size); larger sizes (500+) intermittently hit a D1
+  // "too many SQL variables" error whose actual threshold doesn't match
+  // D1's documented 100-params-per-statement limit and isn't purely a
+  // function of batch size — don't raise this without testing against
+  // real D1 data first.
+  const WRITE_BATCH = 150;
+  for (let i = 0; i < statements.length; i += WRITE_BATCH) {
+    try {
+      await env.master_db.batch(statements.slice(i, i + WRITE_BATCH));
+    } catch (err) {
+      const failingKeys = keys.slice(i, i + WRITE_BATCH);
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`upsert failed at batch offset ${i} (keys: ${failingKeys.join(", ")}): ${message}`);
+    }
   }
+
+  const countAfter = await env.master_db
+    .prepare(`SELECT COUNT(*) as c FROM ${table}`)
+    .first<{ c: number }>();
+  const missingBefore = (countAfter?.c ?? 0) - (countBefore?.c ?? 0);
 
   return { fetched: rows.length, missingBefore, upserted: rows.length };
 }
