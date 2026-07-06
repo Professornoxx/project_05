@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sync-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "d1_databases": [
+    {
+      "binding": "master_db",
+      "database_name": "master-db",
+      "database_id": "b09ac792-edf4-4819-b4d8-9a1389e12531"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "SYNC_KV",
+      "id": "8e7ee32e4f4f4816ac3df77f84912d15"
+    }
+  ],
+
+  "triggers": {
+    "crons": ["0 * * * *"]
+  },
+
+  "vars": {
+    "PACKAGE_ID": 10,
+    "SYNC_WINDOW_DAYS": 5,
+    "DEPOSIT_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/water/export",
+    "WITHDRAW_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/withdraw/export",
+    "WALLET_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/detail/export"
+  }
+}

@@ -1,0 +1,14 @@
+# Real user PII/financial data — never commit, especially to a public repo
+import_batches/
+
+# Local Cloudflare/dev state
+.wrangler/
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars
+
+# Editor/OS
+.DS_Store
+
+# Claude Code local session state
+.claude/
