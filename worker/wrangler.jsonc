@@ -21,7 +21,9 @@
   ],
 
   "triggers": {
-    "crons": ["0 * * * *"]
+    // Hourly: pulls wallet/deposit/withdraw exports.
+    // Daily at 03:00 UTC: purges sync_runs log entries older than 35 days.
+    "crons": ["0 * * * *", "0 3 * * *"]
   },
 
   "vars": {

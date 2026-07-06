@@ -1,6 +1,6 @@
 import type { Env, SourceName } from "./types";
 import { parseAllSheets } from "./excelParse";
-import { getBearerToken } from "./config";
+import { getBearerToken, getExportUrl } from "./config";
 
 function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
@@ -14,12 +14,6 @@ export function syncWindow(env: Env): { beginTime: string; endTime: string } {
   return { beginTime: fmtDate(start), endTime: fmtDate(end) };
 }
 
-const SOURCE_URL_ENV: Record<Exclude<SourceName, "manual_upload">, keyof Env> = {
-  deposit: "DEPOSIT_EXPORT_URL",
-  withdraw: "WITHDRAW_EXPORT_URL",
-  wallet: "WALLET_EXPORT_URL",
-};
-
 // Fetches the export endpoint for the given source over the last N days.
 // Request format confirmed directly from the real frontend's own query
 // string (captured live from their admin panel network tab):
@@ -29,7 +23,7 @@ const SOURCE_URL_ENV: Record<Exclude<SourceName, "manual_upload">, keyof Env> = 
 // attempt failed or hung. pageSize is set high here since export should
 // return every matching row, not one UI page of results.
 export async function fetchExportRows(source: Exclude<SourceName, "manual_upload">, env: Env) {
-  const baseUrl = env[SOURCE_URL_ENV[source]] as string;
+  const baseUrl = await getExportUrl(env, source);
   const { beginTime, endTime } = syncWindow(env);
 
   const params = new URLSearchParams();

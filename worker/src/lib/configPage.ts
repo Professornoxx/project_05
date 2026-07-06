@@ -24,6 +24,7 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <a class="logout" href="#" id="logoutLink">Log out</a>
+<nav style="font-size:13px;margin-bottom:16px;"><a href="/dashboard">Dashboard</a> &nbsp; <a href="/config">Configuration</a></nav>
 <h1>Configuration</h1>
 <p>Administrators only. Changes here take effect immediately and trigger a full data sync.</p>
 
@@ -33,6 +34,18 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
   <input type="text" id="tokenInput" placeholder="paste token" />
   <button id="saveTokenBtn">Save &amp; Sync</button>
   <div class="status" id="tokenStatus"></div>
+</section>
+
+<section>
+  <h2>Export Links</h2>
+  <label for="depositUrl">Deposit Export URL</label>
+  <input type="text" id="depositUrl" placeholder="https://..." />
+  <label for="withdrawUrl">Withdrawal Export URL</label>
+  <input type="text" id="withdrawUrl" placeholder="https://..." />
+  <label for="walletUrl">Wallet Export URL</label>
+  <input type="text" id="walletUrl" placeholder="https://..." />
+  <button id="saveUrlsBtn">Save Export Links</button>
+  <div class="status" id="urlsStatus"></div>
 </section>
 
 <section>
@@ -77,6 +90,46 @@ document.getElementById('saveTokenBtn').onclick = async () => {
     const data = await readJsonSafely(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     statusEl.textContent = 'Saved. Sync: ' + data.syncTriggered;
+    statusEl.className = 'status ok';
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+};
+
+// Prefill the current export URLs on page load so admins can see/edit
+// what's actually in effect, not just blank inputs.
+(async function loadExportUrls() {
+  try {
+    const res = await fetch('/api/config/export-urls');
+    const data = await readJsonSafely(res);
+    if (res.ok) {
+      document.getElementById('depositUrl').value = data.deposit || '';
+      document.getElementById('withdrawUrl').value = data.withdraw || '';
+      document.getElementById('walletUrl').value = data.wallet || '';
+    }
+  } catch (e) {
+    // Non-fatal: leave fields blank if this fails, admin can still type new values.
+  }
+})();
+
+document.getElementById('saveUrlsBtn').onclick = async () => {
+  const statusEl = document.getElementById('urlsStatus');
+  statusEl.textContent = 'Saving...';
+  statusEl.className = 'status';
+  try {
+    const res = await fetch('/api/config/export-urls', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        deposit: document.getElementById('depositUrl').value,
+        withdraw: document.getElementById('withdrawUrl').value,
+        wallet: document.getElementById('walletUrl').value,
+      }),
+    });
+    const data = await readJsonSafely(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    statusEl.textContent = 'Saved.';
     statusEl.className = 'status ok';
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;

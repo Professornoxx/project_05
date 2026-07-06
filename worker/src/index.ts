@@ -1,10 +1,14 @@
 import type { Env } from "./lib/types";
 import { runFullSync, syncSource } from "./lib/sync";
 import { handleMasterUpload } from "./lib/upload";
-import { setBearerToken } from "./lib/config";
+import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
+import { DASHBOARD_PAGE_HTML } from "./lib/dashboardPage";
 import { LOGIN_PAGE_HTML } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader } from "./lib/auth";
+import { cleanupOldSyncRuns } from "./lib/cleanup";
+
+const DAILY_CLEANUP_CRON = "0 3 * * *";
 
 // Used by JSON API routes: 401 with no redirect, for programmatic/curl callers.
 function requireAdmin(request: Request, env: Env): Response | null {
@@ -23,6 +27,15 @@ export default {
       return;
     }
     await env.SYNC_KV.put(executionId, "1", { expirationTtl: 86400 });
+
+    if (controller.cron === DAILY_CLEANUP_CRON) {
+      ctx.waitUntil(
+        cleanupOldSyncRuns(env)
+          .then((result) => console.log("cleanupOldSyncRuns:", JSON.stringify(result)))
+          .catch((err) => console.error("cleanupOldSyncRuns failed:", err))
+      );
+      return;
+    }
 
     ctx.waitUntil(
       runFullSync(env).catch((err) => console.error("runFullSync failed:", err))
@@ -48,6 +61,13 @@ export default {
       return Response.json({ results });
     }
 
+    if (url.pathname === "/api/cleanup/trigger" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const result = await cleanupOldSyncRuns(env);
+      return Response.json(result);
+    }
+
     if (url.pathname === "/api/sync/status" && request.method === "GET") {
       const authFail = requireAdmin(request, env);
       if (authFail) return authFail;
@@ -66,6 +86,16 @@ export default {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
       return new Response(CONFIG_PAGE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // Admin Dashboard — its own URL, same server-side auth gate as /config.
+    if (url.pathname === "/dashboard" && request.method === "GET") {
+      if (!isAuthed(request, env)) {
+        return new Response(null, { status: 302, headers: { Location: "/login" } });
+      }
+      return new Response(DASHBOARD_PAGE_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
@@ -108,6 +138,26 @@ export default {
       // responds; check /api/sync/status for the sync's actual outcome.
       ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
       return Response.json({ saved: true, syncTriggered: "started — check /api/sync/status for results" });
+    }
+
+    if (url.pathname === "/api/config/export-urls" && request.method === "GET") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      return Response.json(await getAllExportUrls(env));
+    }
+
+    if (url.pathname === "/api/config/export-urls" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const body = (await request.json()) as Partial<Record<"deposit" | "withdraw" | "wallet", string>>;
+      const sources = ["deposit", "withdraw", "wallet"] as const;
+      for (const source of sources) {
+        const value = body[source];
+        if (typeof value === "string" && value.trim() !== "") {
+          await setExportUrl(env, source, value.trim());
+        }
+      }
+      return Response.json({ saved: true, urls: await getAllExportUrls(env) });
     }
 
     if (url.pathname === "/api/config/upload" && request.method === "POST") {
