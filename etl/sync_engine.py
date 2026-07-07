@@ -21,13 +21,20 @@ MASTER_DB_ID = os.environ["MASTER_DB_ID"]
 DAILY_DB_ID = os.environ["DAILY_DB_ID"]
 PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 
-# D1's real per-statement bound-variable ceiling, measured directly against
-# this HTTP API: a 150-row x 6-param multi-row INSERT (900 variables) failed
-# with "too many SQL variables" at offset ~410 — so the real limit is close
-# to 400, not the ~1000+ figure the Workers-binding testing seemed to
-# suggest (that testing conflated several effects and was never this
-# precise). 50 rows x 6 params = 300 variables, comfortably under it.
-CHUNK_SIZE = 50
+# D1's real per-statement bound-variable ceiling. The "offset" in D1's
+# "too many SQL variables at offset N" error is a byte position in the SQL
+# TEXT, not a variable index — it landed at the same ~407-413 regardless of
+# whether the chunk held 150 or 50 rows, which only makes sense if that byte
+# offset falls inside the ~16th row's placeholders both times (the query's
+# fixed-length prefix is ~70 chars, each "(?,?,?,?,?,?)," is ~21 chars:
+# 70 + 16*21 ≈ 406). That lines up exactly with D1's documented ceiling of
+# 100 bound parameters PER STATEMENT (16 rows x 6 params = 96) — the real
+# limit was the documented one all along; earlier Workers-side testing that
+# suggested ~150 was safe was measuring something different (.batch() calls
+# with many separate single-row statements, where each statement's own
+# param count never left single digits, not one big multi-row VALUES
+# clause like this).
+CHUNK_SIZE = 16
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
