@@ -44,7 +44,8 @@ def d1_query(db_id: str, sql: str, params: list | None = None) -> list[dict]:
         headers=HEADERS,
         json={"sql": sql, "params": params or []},
     )
-    res.raise_for_status()
+    if not res.ok:
+        raise RuntimeError(f"D1 HTTP {res.status_code}: {res.text[:1000]}")
     body = res.json()
     if not body.get("success"):
         raise RuntimeError(f"D1 query failed: {body.get('errors')}")

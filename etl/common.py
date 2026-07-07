@@ -42,6 +42,14 @@ def _coerce(v):
         return None
     if isinstance(v, pd.Timestamp) or isinstance(v, datetime):
         return v.isoformat()
+    # pandas/numpy scalar types (numpy.int64, numpy.float64, ...) don't
+    # satisfy isinstance(v, int)/(v, float) — they're not JSON-serializable
+    # as-is either, and were silently falling through to str(v) below,
+    # which produced garbage values sent to D1's HTTP API (unlike the
+    # Workers binding, which accepted JS numbers natively). .item()
+    # converts a numpy scalar to its native Python equivalent.
+    if hasattr(v, "item") and callable(v.item):
+        return v.item()
     if isinstance(v, (int, float, str)):
         return v
     return str(v)
