@@ -3,8 +3,8 @@ import { runFullSync, syncSource } from "./lib/sync";
 import { handleMasterUpload } from "./lib/upload";
 import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
-import { DASHBOARD_PAGE_HTML } from "./lib/dashboardPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
+import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { LOGIN_PAGE_HTML } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -124,14 +124,26 @@ export default {
       });
     }
 
-    // Admin Dashboard — its own URL, same server-side auth gate as /config.
-    if (url.pathname === "/dashboard" && request.method === "GET") {
+    // New sidebar-based dashboard — its own URL per page, all under /dashboard,
+    // separate from /config in every sense (own routes, own markup, own
+    // auth check). Content is placeholder until each page's design is given.
+    const DASHBOARD_ROUTES: Record<string, { key: string; title: string }> = {
+      "/dashboard": { key: "home", title: "Home" },
+      "/dashboard/action-center": { key: "action-center", title: "Action Center" },
+      "/dashboard/performance": { key: "performance", title: "Performance" },
+      "/dashboard/analytics": { key: "analytics", title: "Analytics" },
+      "/dashboard/platform-analysis": { key: "platform-analysis", title: "Platform Analysis" },
+      "/dashboard/search-user": { key: "search-user", title: "Search User" },
+    };
+    const dashboardRoute = DASHBOARD_ROUTES[url.pathname];
+    if (dashboardRoute && request.method === "GET") {
       if (!isAuthed(request, env)) {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
-      return new Response(DASHBOARD_PAGE_HTML, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return new Response(
+        renderDashboardShell(dashboardRoute.key, dashboardRoute.title, EMPTY_CONTENT_PLACEHOLDER),
+        { headers: { "content-type": "text/html; charset=utf-8" } }
+      );
     }
 
     // Master DB analytics — its own URL, same auth gate. Separate from
