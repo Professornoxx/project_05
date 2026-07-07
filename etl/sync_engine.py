@@ -21,7 +21,13 @@ MASTER_DB_ID = os.environ["MASTER_DB_ID"]
 DAILY_DB_ID = os.environ["DAILY_DB_ID"]
 PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 
-CHUNK_SIZE = 150  # proven safe D1 batch size (see chunkedUpsert.ts history)
+# D1's real per-statement bound-variable ceiling, measured directly against
+# this HTTP API: a 150-row x 6-param multi-row INSERT (900 variables) failed
+# with "too many SQL variables" at offset ~410 — so the real limit is close
+# to 400, not the ~1000+ figure the Workers-binding testing seemed to
+# suggest (that testing conflated several effects and was never this
+# precise). 50 rows x 6 params = 300 variables, comfortably under it.
+CHUNK_SIZE = 50
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
