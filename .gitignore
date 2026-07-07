@@ -12,3 +12,5 @@ worker/.dev.vars
 
 # Claude Code local session state
 .claude/
+__pycache__/
+*.pyc

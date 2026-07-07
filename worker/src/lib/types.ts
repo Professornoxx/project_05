@@ -1,5 +1,6 @@
 export interface Env {
-  master_db: D1Database;
+  master_db: D1Database; // users only
+  daily_records_db: D1Database; // deposits, withdrawals, wallet_details, sync_runs — 35-day retention
   SYNC_KV: KVNamespace;
   UPLOADS?: R2Bucket;
   BEARER_TOKEN: string;
@@ -9,6 +10,8 @@ export interface Env {
   WITHDRAW_EXPORT_URL: string;
   WALLET_EXPORT_URL: string;
   ADMIN_API_KEY: string;
+  SELF_URL: string;
+  INTERNAL_SECRET: string;
 }
 
 export type SourceName = "wallet" | "deposit" | "withdraw" | "manual_upload";

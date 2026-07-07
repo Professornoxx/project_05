@@ -10,6 +10,11 @@
       "binding": "master_db",
       "database_name": "master-db",
       "database_id": "b09ac792-edf4-4819-b4d8-9a1389e12531"
+    },
+    {
+      "binding": "daily_records_db",
+      "database_name": "daily-records-db",
+      "database_id": "4aa7eec5-5bd7-4c6e-ba5c-a732bebe187b"
     }
   ],
 
@@ -31,6 +36,11 @@
     "SYNC_WINDOW_DAYS": 5,
     "DEPOSIT_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/water/export",
     "WITHDRAW_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/withdraw/export",
-    "WALLET_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/detail/export"
+    "WALLET_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/detail/export",
+    // Used for self-invocation subrequests (see lib/chunkedUpsert.ts) — each
+    // self-fetch is a fresh Worker invocation with its own CPU-time budget,
+    // the free-plan-compatible way to process more rows than a single
+    // invocation's CPU limit allows.
+    "SELF_URL": "https://sync-worker.prightpath-attendance.workers.dev"
   }
 }

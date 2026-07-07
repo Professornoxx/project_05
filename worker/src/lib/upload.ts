@@ -113,7 +113,7 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
     failedRows,
   };
 
-  await env.master_db
+  await env.daily_records_db
     .prepare(
       `INSERT INTO sync_runs (source, started_at, finished_at, status, rows_upserted, error_message)
        VALUES ('manual_upload', ?, ?, ?, ?, ?)`

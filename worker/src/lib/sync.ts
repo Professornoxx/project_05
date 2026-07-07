@@ -1,6 +1,7 @@
 import type { Env, SourceName, SyncResult } from "./types";
 import { fetchExportRows } from "./exportClient";
-import { upsertRows, tableForSource } from "./upsert";
+import { upsertRowsChunked, tableForSource } from "./chunkedUpsert";
+import { updateMasterAggregatesForUsers } from "./aggregate";
 
 const SOURCES: Exclude<SourceName, "manual_upload">[] = ["wallet", "deposit", "withdraw"];
 
@@ -10,7 +11,7 @@ async function logRun(
   startedAt: string,
   result: Partial<SyncResult> & { status: "success" | "failed" }
 ) {
-  await env.master_db
+  await env.daily_records_db
     .prepare(
       `INSERT INTO sync_runs (source, started_at, finished_at, status, rows_upserted, error_message)
        VALUES (?, ?, ?, ?, ?, ?)`
@@ -33,7 +34,19 @@ export async function syncSource(source: Exclude<SourceName, "manual_upload">, e
   const startedAt = new Date().toISOString();
   try {
     const rows = await fetchExportRows(source, env);
-    const { fetched, missingBefore, upserted } = await upsertRows(tableForSource(source), rows, env);
+    const { fetched, missingBefore, upserted, userIds } = await upsertRowsChunked(tableForSource(source), rows, env);
+
+    // Step 2 of the requested flow: once the Daily Records DB is updated,
+    // refresh the Master DB's per-user totals from it. Only deposit/
+    // withdraw map to a Master DB aggregate column (total_deposit,
+    // total_withdrawal); wallet_details has no equivalent column to refresh
+    // yet, so it's skipped here — revisit once that endpoint is unblocked
+    // and its field meaning is confirmed.
+    if (source === "deposit" || source === "withdraw") {
+      const table = source === "deposit" ? "deposits" : "withdrawals";
+      await updateMasterAggregatesForUsers(env, table, userIds);
+    }
+
     await logRun(env, source, startedAt, { status: "success", upserted });
     return { source, fetched, missing_found: missingBefore, upserted, status: "success" };
   } catch (err) {

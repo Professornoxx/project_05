@@ -7,8 +7,10 @@ import { DASHBOARD_PAGE_HTML } from "./lib/dashboardPage";
 import { LOGIN_PAGE_HTML } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
+import type { ChunkRow } from "./lib/chunkedUpsert";
 
 const DAILY_CLEANUP_CRON = "0 3 * * *";
+const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
 
 // Used by JSON API routes: 401 with no redirect, for programmatic/curl callers.
 function requireAdmin(request: Request, env: Env): Response | null {
@@ -50,6 +52,37 @@ export default {
       return new Response("Not Found", { status: 404 });
     }
 
+    // Internal-only: writes one chunk of rows into daily_records_db.
+    // Called by this same Worker via self-fetch (see chunkedUpsert.ts) so
+    // each chunk gets its own fresh CPU-time budget — deliberately gated by
+    // a separate secret from the admin login, since this is server-to-
+    // server, not something the browser/admin session should be able to hit.
+    if (url.pathname === "/internal/write-chunk" && request.method === "POST") {
+      if (request.headers.get("x-internal-secret") !== env.INTERNAL_SECRET) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const body = (await request.json()) as { table?: string; rows?: ChunkRow[]; synced_at?: string };
+      if (!body.table || !CHUNK_WRITE_TABLES.has(body.table) || !Array.isArray(body.rows) || !body.synced_at) {
+        return Response.json({ error: "invalid chunk payload" }, { status: 400 });
+      }
+      const statements = body.rows.map((r) =>
+        env.daily_records_db
+          .prepare(
+            `INSERT INTO ${body.table} (record_key, user_id, amount, status, create_time, synced_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(record_key) DO UPDATE SET
+               user_id = excluded.user_id,
+               amount = excluded.amount,
+               status = excluded.status,
+               create_time = excluded.create_time,
+               synced_at = excluded.synced_at`
+          )
+          .bind(r.record_key, r.user_id, r.amount, r.status, r.create_time, body.synced_at)
+      );
+      await env.daily_records_db.batch(statements);
+      return Response.json({ written: statements.length });
+    }
+
     if (url.pathname === "/api/sync/trigger" && request.method === "POST") {
       const authFail = requireAdmin(request, env);
       if (authFail) return authFail;
@@ -71,7 +104,7 @@ export default {
     if (url.pathname === "/api/sync/status" && request.method === "GET") {
       const authFail = requireAdmin(request, env);
       if (authFail) return authFail;
-      const runs = await env.master_db
+      const runs = await env.daily_records_db
         .prepare("SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 50")
         .all();
       return Response.json(runs.results);

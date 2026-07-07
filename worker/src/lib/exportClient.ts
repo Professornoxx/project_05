@@ -6,12 +6,66 @@ function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
+function todayUTC(): Date {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+// "Today" as an IST calendar date (UTC+5:30) — the wallet day boundary is
+// explicitly IST, not UTC, per instruction. Shifting the current instant by
+// the IST offset before reading UTC date fields gives IST's calendar date
+// without needing a timezone library (Workers' V8 runtime has no reliable
+// local Intl timezone database to lean on for this).
+function todayIST(): Date {
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  return new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()));
+}
+
+function daysAgo(base: Date, days: number): Date {
+  return new Date(base.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+// Deposit/withdraw: exactly N calendar days including today (N=5 by default
+// via SYNC_WINDOW_DAYS). Deliberately computed from a midnight-UTC anchor,
+// not "now minus N*24h" — the latter spans N+1 calendar dates whenever the
+// current time of day isn't exactly midnight (e.g. 5*24h back from 14:00
+// today lands on a date 6 calendar days ago once truncated), which quietly
+// over-fetched an extra day every time.
 export function syncWindow(env: Env): { beginTime: string; endTime: string } {
   const days = Number(env.SYNC_WINDOW_DAYS);
-  const windowDays = Number.isFinite(days) && days > 0 ? days : 5; // fallback if unset/invalid
-  const end = new Date();
-  const start = new Date(end.getTime() - windowDays * 24 * 60 * 60 * 1000);
-  return { beginTime: fmtDate(start), endTime: fmtDate(end) };
+  const windowDays = Number.isFinite(days) && days > 0 ? days : 5;
+  const today = todayUTC();
+  const start = daysAgo(today, windowDays - 1);
+  return { beginTime: fmtDate(start), endTime: fmtDate(today) };
+}
+
+// Wallet's real daily volume (~100,000 rows/day, confirmed live) makes a
+// multi-day window unworkable — see walletWindow below for the day-based
+// logic that replaces it. Day boundary is IST (per instruction): the first
+// sync after IST midnight pulls the previous IST day; every later run that
+// same IST day pulls the current IST day.
+export function walletWindow(isFirstRunOfDay: boolean): { beginTime: string; endTime: string } {
+  const today = todayIST();
+  const day = isFirstRunOfDay ? daysAgo(today, 1) : today;
+  const dateStr = fmtDate(day);
+  return { beginTime: dateStr, endTime: dateStr };
+}
+
+const WALLET_LAST_RUN_DATE_KEY = "wallet:last_run_date";
+
+// True exactly once per IST calendar day: the first scheduled/manual sync
+// after IST midnight. Every later run that same IST day gets
+// isFirstRunOfDay=false. The marker is written unconditionally as soon as
+// the IST day changes — tied to calendar time, not to whether that first
+// attempt succeeds.
+export async function isFirstWalletRunOfDay(env: Env): Promise<boolean> {
+  const todayStr = fmtDate(todayIST());
+  const lastRunDate = await env.SYNC_KV.get(WALLET_LAST_RUN_DATE_KEY);
+  if (lastRunDate === todayStr) return false;
+  await env.SYNC_KV.put(WALLET_LAST_RUN_DATE_KEY, todayStr);
+  return true;
 }
 
 // Fetches the export endpoint for the given source over the last N days.
@@ -24,7 +78,8 @@ export function syncWindow(env: Env): { beginTime: string; endTime: string } {
 // return every matching row, not one UI page of results.
 export async function fetchExportRows(source: Exclude<SourceName, "manual_upload">, env: Env) {
   const baseUrl = await getExportUrl(env, source);
-  const { beginTime, endTime } = syncWindow(env);
+  const { beginTime, endTime } =
+    source === "wallet" ? walletWindow(await isFirstWalletRunOfDay(env)) : syncWindow(env);
 
   const params = new URLSearchParams();
   params.set("packageId", env.PACKAGE_ID);
@@ -42,8 +97,10 @@ export async function fetchExportRows(source: Exclude<SourceName, "manual_upload
   // (45s+, no response at all) for valid, authenticated requests — a
   // server-side issue we can't fix, but we can stop it from tying up this
   // Worker invocation forever. Fail fast instead, log a clear timeout error,
-  // and let the next hourly cron retry.
-  const REQUEST_TIMEOUT_MS = 25_000;
+  // and let the next hourly cron retry. Wallet gets a longer allowance since
+  // its files are much larger (confirmed ~5-15MB for a single day) and take
+  // longer to transfer even when the backend is responding normally.
+  const REQUEST_TIMEOUT_MS = source === "wallet" ? 60_000 : 25_000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
