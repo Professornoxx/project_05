@@ -9,7 +9,8 @@ export interface Env {
   DEPOSIT_EXPORT_URL: string;
   WITHDRAW_EXPORT_URL: string;
   WALLET_EXPORT_URL: string;
-  ADMIN_API_KEY: string;
+  ADMIN_API_KEY: string; // Configuration login only
+  DASHBOARD_ADMIN_KEY: string; // Dashboard login only — deliberately separate from ADMIN_API_KEY
   SELF_URL: string;
   INTERNAL_SECRET: string;
 }

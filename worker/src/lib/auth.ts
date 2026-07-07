@@ -2,14 +2,17 @@ import type { Env } from "./types";
 
 const MAX_AGE_SECONDS = 8 * 60 * 60; // 8 hours
 
-// Two independent session cookies — logging into Dashboard does not grant
-// access to Configuration, and vice versa. Both still check against the
-// same ADMIN_API_KEY (there's one admin key, not two), but the sessions
-// themselves are separate: clearing/expiring one has no effect on the other.
+// Two fully independent logins: different session cookies AND different
+// passwords. Logging into Dashboard does not grant access to Configuration,
+// and vice versa — neither the session nor the password is shared.
 export type AuthArea = "dashboard" | "config";
 
 function cookieName(area: AuthArea): string {
   return area === "dashboard" ? "dashboard_session" : "config_session";
+}
+
+function expectedKey(env: Env, area: AuthArea): string {
+  return area === "dashboard" ? env.DASHBOARD_ADMIN_KEY : env.ADMIN_API_KEY;
 }
 
 function parseCookies(request: Request): Record<string, string> {
@@ -29,10 +32,11 @@ function parseCookies(request: Request): Record<string, string> {
 // notes in the cloudflare-one skill on why Access needs a zone-owned
 // hostname (workers.dev won't qualify).
 export function isAuthed(request: Request, env: Env, area: AuthArea): boolean {
+  const key = expectedKey(env, area);
   const headerKey = request.headers.get("x-admin-key");
-  if (headerKey && headerKey === env.ADMIN_API_KEY) return true;
+  if (headerKey && headerKey === key) return true;
   const cookies = parseCookies(request);
-  return cookies[cookieName(area)] === env.ADMIN_API_KEY;
+  return cookies[cookieName(area)] === key;
 }
 
 export function sessionCookieHeader(area: AuthArea, key: string): string {

@@ -238,7 +238,7 @@ export default {
 
     if (url.pathname === "/login" && request.method === "POST") {
       const body = (await request.json()) as { key?: string };
-      if (!body.key || body.key !== env.ADMIN_API_KEY) {
+      if (!body.key || body.key !== env.DASHBOARD_ADMIN_KEY) {
         return new Response("Unauthorized", { status: 401 });
       }
       return new Response(null, {
