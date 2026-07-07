@@ -4,6 +4,7 @@ import { handleMasterUpload } from "./lib/upload";
 import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { DASHBOARD_PAGE_HTML } from "./lib/dashboardPage";
+import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { LOGIN_PAGE_HTML } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -130,6 +131,62 @@ export default {
       }
       return new Response(DASHBOARD_PAGE_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    // Master DB analytics — its own URL, same auth gate. Separate from
+    // /dashboard (which is about sync/pipeline health, not the data itself).
+    if (url.pathname === "/master-stats" && request.method === "GET") {
+      if (!isAuthed(request, env)) {
+        return new Response(null, { status: 302, headers: { Location: "/login" } });
+      }
+      return new Response(MASTER_STATS_PAGE_HTML, {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/api/master/stats" && request.method === "GET") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+
+      const totals = await env.master_db
+        .prepare(
+          `SELECT COUNT(*) as total_users,
+                  SUM(user_balance) as total_balance,
+                  SUM(total_deposit) as total_deposits,
+                  SUM(total_withdrawal) as total_withdrawals,
+                  SUM(deposit_count) as total_deposit_count,
+                  SUM(CASE WHEN is_test_account = 1 THEN 1 ELSE 0 END) as test_accounts
+           FROM users`
+        )
+        .first();
+
+      const topByBalance = await env.master_db
+        .prepare(
+          `SELECT user_id, username, phone, city, user_balance, total_deposit, total_withdrawal
+           FROM users WHERE user_balance IS NOT NULL ORDER BY user_balance DESC LIMIT 10`
+        )
+        .all();
+
+      const topByDeposit = await env.master_db
+        .prepare(
+          `SELECT user_id, username, phone, city, total_deposit, deposit_count
+           FROM users WHERE total_deposit IS NOT NULL ORDER BY total_deposit DESC LIMIT 10`
+        )
+        .all();
+
+      const byCity = await env.master_db
+        .prepare(
+          `SELECT city, COUNT(*) as user_count FROM users
+           WHERE city IS NOT NULL AND city != '' GROUP BY city ORDER BY user_count DESC LIMIT 10`
+        )
+        .all();
+
+      return Response.json({
+        totals,
+        topByBalance: topByBalance.results,
+        topByDeposit: topByDeposit.results,
+        byCity: byCity.results,
       });
     }
 

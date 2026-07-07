@@ -31,7 +31,7 @@ export const DASHBOARD_PAGE_HTML = `<!DOCTYPE html>
 <body>
 <a class="logout" href="#" id="logoutLink">Log out</a>
 <h1>Admin Dashboard</h1>
-<nav><a href="/dashboard">Dashboard</a><a href="/config">Configuration</a></nav>
+<nav><a href="/dashboard">Dashboard</a><a href="/master-stats">Master DB Analytics</a><a href="/config">Configuration</a></nav>
 
 <section>
   <h2>Pipeline Health</h2>
