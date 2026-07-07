@@ -24,7 +24,7 @@ export const MASTER_STATS_PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <a class="logout" href="#" id="logoutLink">Log out</a>
-<nav><a href="/dashboard">Dashboard</a><a href="/master-stats">Master DB Analytics</a><a href="/config">Configuration</a></nav>
+<nav><a href="/dashboard">Dashboard</a><a href="/master-stats">Master DB Analytics</a></nav>
 <h1>Master Database Analytics</h1>
 <p>Live data from the Master DB (users table). Aggregate columns (balance, deposit/withdrawal totals) are kept current by the hourly sync.</p>
 

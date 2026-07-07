@@ -24,7 +24,6 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <a class="logout" href="#" id="logoutLink">Log out</a>
-<nav style="font-size:13px;margin-bottom:16px;"><a href="/dashboard">Dashboard</a> &nbsp; <a href="/master-stats">Master DB Analytics</a> &nbsp; <a href="/config">Configuration</a></nav>
 <h1>Configuration</h1>
 <p>Administrators only. Changes here take effect immediately and trigger a full data sync.</p>
 
@@ -59,8 +58,8 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
 <script>
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
-  await fetch('/logout', { method: 'POST' });
-  location.href = '/login';
+  await fetch('/config/logout', { method: 'POST' });
+  location.href = '/config/login';
 };
 
 // Reads a response as JSON only when the server actually says it's JSON.

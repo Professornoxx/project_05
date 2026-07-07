@@ -5,8 +5,8 @@ import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
-import { LOGIN_PAGE_HTML } from "./lib/loginPage";
-import { isAuthed, sessionCookieHeader, clearCookieHeader } from "./lib/auth";
+import { renderLoginPage } from "./lib/loginPage";
+import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
 import type { ChunkRow } from "./lib/chunkedUpsert";
 
@@ -14,8 +14,9 @@ const DAILY_CLEANUP_CRON = "0 3 * * *";
 const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
 
 // Used by JSON API routes: 401 with no redirect, for programmatic/curl callers.
-function requireAdmin(request: Request, env: Env): Response | null {
-  if (!isAuthed(request, env)) {
+// area picks which of the two independent sessions (dashboard vs config) to check.
+function requireAdmin(request: Request, env: Env, area: AuthArea): Response | null {
+  if (!isAuthed(request, env, area)) {
     return new Response("Unauthorized", { status: 401 });
   }
   return null;
@@ -85,7 +86,7 @@ export default {
     }
 
     if (url.pathname === "/api/sync/trigger" && request.method === "POST") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
       const source = url.searchParams.get("source");
       const results =
@@ -96,14 +97,14 @@ export default {
     }
 
     if (url.pathname === "/api/cleanup/trigger" && request.method === "POST") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
       const result = await cleanupOldSyncRuns(env);
       return Response.json(result);
     }
 
     if (url.pathname === "/api/sync/status" && request.method === "GET") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
       const runs = await env.daily_records_db
         .prepare("SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 50")
@@ -111,22 +112,47 @@ export default {
       return Response.json(runs.results);
     }
 
-    // Dedicated Configuration page — its own URL, admin-only. Gated
-    // server-side: unauthenticated visitors are redirected to /login and
-    // never see the real form or its markup. Stopgap until a custom domain
-    // exists and this can sit behind real Cloudflare Access + SSO/email OTP.
+    // Dedicated Configuration page — its own URL, its own independent login
+    // session (config_session), completely separate from Dashboard's
+    // session. Gated server-side: unauthenticated visitors are redirected
+    // to /config/login and never see the real form or its markup. Stopgap
+    // until a custom domain exists and this can sit behind real Cloudflare
+    // Access + SSO/email OTP.
     if (url.pathname === "/config" && request.method === "GET") {
-      if (!isAuthed(request, env)) {
-        return new Response(null, { status: 302, headers: { Location: "/login" } });
+      if (!isAuthed(request, env, "config")) {
+        return new Response(null, { status: 302, headers: { Location: "/config/login" } });
       }
       return new Response(CONFIG_PAGE_HTML, {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }
 
+    if (url.pathname === "/config/login" && request.method === "GET") {
+      return new Response(
+        renderLoginPage({ title: "Configuration Login", postUrl: "/config/login", redirectUrl: "/config" }),
+        { headers: { "content-type": "text/html; charset=utf-8" } }
+      );
+    }
+
+    if (url.pathname === "/config/login" && request.method === "POST") {
+      const body = (await request.json()) as { key?: string };
+      if (!body.key || body.key !== env.ADMIN_API_KEY) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      return new Response(null, {
+        status: 204,
+        headers: { "Set-Cookie": sessionCookieHeader("config", body.key) },
+      });
+    }
+
+    if (url.pathname === "/config/logout" && request.method === "POST") {
+      return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader("config") } });
+    }
+
     // New sidebar-based dashboard — its own URL per page, all under /dashboard,
-    // separate from /config in every sense (own routes, own markup, own
-    // auth check). Content is placeholder until each page's design is given.
+    // with its own independent login session (dashboard_session), separate
+    // from Configuration's session. Content is placeholder until each
+    // page's design is given.
     const DASHBOARD_ROUTES: Record<string, { key: string; title: string }> = {
       "/dashboard": { key: "home", title: "Home" },
       "/dashboard/action-center": { key: "action-center", title: "Action Center" },
@@ -137,7 +163,7 @@ export default {
     };
     const dashboardRoute = DASHBOARD_ROUTES[url.pathname];
     if (dashboardRoute && request.method === "GET") {
-      if (!isAuthed(request, env)) {
+      if (!isAuthed(request, env, "dashboard")) {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
       return new Response(
@@ -146,10 +172,10 @@ export default {
       );
     }
 
-    // Master DB analytics — its own URL, same auth gate. Separate from
-    // /dashboard (which is about sync/pipeline health, not the data itself).
+    // Master DB analytics — its own URL, dashboard-area auth gate (it's an
+    // analytics view, grouped with Dashboard, not Configuration).
     if (url.pathname === "/master-stats" && request.method === "GET") {
-      if (!isAuthed(request, env)) {
+      if (!isAuthed(request, env, "dashboard")) {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
       return new Response(MASTER_STATS_PAGE_HTML, {
@@ -158,7 +184,7 @@ export default {
     }
 
     if (url.pathname === "/api/master/stats" && request.method === "GET") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
       const totals = await env.master_db
@@ -202,10 +228,12 @@ export default {
       });
     }
 
+    // Dashboard's own login — independent from Configuration's.
     if (url.pathname === "/login" && request.method === "GET") {
-      return new Response(LOGIN_PAGE_HTML, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
+      return new Response(
+        renderLoginPage({ title: "Dashboard Login", postUrl: "/login", redirectUrl: "/dashboard" }),
+        { headers: { "content-type": "text/html; charset=utf-8" } }
+      );
     }
 
     if (url.pathname === "/login" && request.method === "POST") {
@@ -215,16 +243,16 @@ export default {
       }
       return new Response(null, {
         status: 204,
-        headers: { "Set-Cookie": sessionCookieHeader(body.key) },
+        headers: { "Set-Cookie": sessionCookieHeader("dashboard", body.key) },
       });
     }
 
     if (url.pathname === "/logout" && request.method === "POST") {
-      return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader() } });
+      return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader("dashboard") } });
     }
 
     if (url.pathname === "/api/config/token" && request.method === "POST") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "config");
       if (authFail) return authFail;
       const body = (await request.json()) as { token?: string };
       if (!body.token) {
@@ -243,13 +271,13 @@ export default {
     }
 
     if (url.pathname === "/api/config/export-urls" && request.method === "GET") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "config");
       if (authFail) return authFail;
       return Response.json(await getAllExportUrls(env));
     }
 
     if (url.pathname === "/api/config/export-urls" && request.method === "POST") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "config");
       if (authFail) return authFail;
       const body = (await request.json()) as Partial<Record<"deposit" | "withdraw" | "wallet", string>>;
       const sources = ["deposit", "withdraw", "wallet"] as const;
@@ -263,7 +291,7 @@ export default {
     }
 
     if (url.pathname === "/api/config/upload" && request.method === "POST") {
-      const authFail = requireAdmin(request, env);
+      const authFail = requireAdmin(request, env, "config");
       if (authFail) return authFail;
       const form = await request.formData();
       const file = form.get("file") as File | null;
