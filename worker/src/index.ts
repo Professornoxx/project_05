@@ -5,6 +5,7 @@ import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
+import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -166,10 +167,69 @@ export default {
       if (!isAuthed(request, env, "dashboard")) {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
+      const content = dashboardRoute.key === "home" ? HOME_CONTENT_HTML : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
-        renderDashboardShell(dashboardRoute.key, dashboardRoute.title, EMPTY_CONTENT_PLACEHOLDER),
+        renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
         { headers: { "content-type": "text/html; charset=utf-8" } }
       );
+    }
+
+    // Home page (section 1) stats — daily KPI overview for a given date
+    // (defaults to today). Deposit "complete" and withdraw "in-review +
+    // processing + complete" definitions confirmed against real status
+    // values in daily_records_db: deposits use 'COMPLETE'/'PROCESS'/'FAILED'
+    // text; withdrawals use '0.0'..'4.0' matching 0=Under review,
+    // 1=Processing, 2=Completed, 3=Rejected, 4=Failed — so withdraw totals
+    // exclude 3 and 4 only.
+    if (url.pathname === "/api/dashboard/home-stats" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+
+      const depositAgg = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE'`
+        )
+        .bind(date)
+        .first<{ total: number; orders: number; users: number }>();
+
+      const withdrawAgg = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
+           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) IN (0,1,2)`
+        )
+        .bind(date)
+        .first<{ total: number; orders: number; users: number }>();
+
+      const activeUsersRow = await env.daily_records_db
+        .prepare(
+          `SELECT COUNT(DISTINCT user_id) as c FROM (
+             SELECT user_id FROM deposits WHERE date(create_time) = ?
+             UNION
+             SELECT user_id FROM withdrawals WHERE date(create_time) = ?
+             UNION
+             SELECT user_id FROM wallet_details WHERE date(create_time) = ?
+           )`
+        )
+        .bind(date, date, date)
+        .first<{ c: number }>();
+
+      const totalUsersRow = await env.master_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
+
+      return Response.json({
+        date,
+        totalUsers: totalUsersRow?.c ?? 0,
+        registeredActive: totalUsersRow?.c ?? 0,
+        totalDeposit: depositAgg?.total ?? 0,
+        totalWithdraw: withdrawAgg?.total ?? 0,
+        depositOrders: depositAgg?.orders ?? 0,
+        withdrawOrders: withdrawAgg?.orders ?? 0,
+        depositUsers: depositAgg?.users ?? 0,
+        withdrawUsers: withdrawAgg?.users ?? 0,
+        activeUsers: activeUsersRow?.c ?? 0,
+      });
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
