@@ -6,6 +6,7 @@ import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
+import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -167,7 +168,10 @@ export default {
       if (!isAuthed(request, env, "dashboard")) {
         return new Response(null, { status: 302, headers: { Location: "/login" } });
       }
-      const content = dashboardRoute.key === "home" ? HOME_CONTENT_HTML : EMPTY_CONTENT_PLACEHOLDER;
+      const content =
+        dashboardRoute.key === "home"
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML
+          : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
         { headers: { "content-type": "text/html; charset=utf-8" } }
@@ -229,6 +233,66 @@ export default {
         depositUsers: depositAgg?.users ?? 0,
         withdrawUsers: withdrawAgg?.users ?? 0,
         activeUsers: activeUsersRow?.c ?? 0,
+      });
+    }
+
+    // Deposit Analysis (dashboard section 2): amount-range breakdown,
+    // success-rate-by-range, and by-channel tables. All scoped to a single
+    // date (defaults to today), same convention as home-stats.
+    if (url.pathname === "/api/dashboard/deposit-analysis" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+
+      const RANGE_CASE = `CASE
+        WHEN amount >= 200 AND amount <= 299 THEN '200-299'
+        WHEN amount >= 300 AND amount <= 499 THEN '300-499'
+        WHEN amount >= 500 AND amount <= 999 THEN '500-999'
+        WHEN amount >= 1000 AND amount <= 1999 THEN '1000-1999'
+        WHEN amount >= 2000 AND amount <= 2499 THEN '2000-2499'
+        WHEN amount >= 2500 AND amount <= 4999 THEN '2500-4999'
+        WHEN amount >= 5000 AND amount <= 9999 THEN '5000-9999'
+        WHEN amount >= 10000 AND amount <= 19999 THEN '10000-19999'
+        WHEN amount >= 20000 AND amount <= 50000 THEN '20000-50000'
+        ELSE 'Other' END`;
+      const AVG_MINUTES = `(julianday(result_time) - julianday(create_time)) * 24 * 60`;
+
+      const amountRange = await env.daily_records_db
+        .prepare(
+          `SELECT ${RANGE_CASE} as range, COUNT(*) as count, COUNT(DISTINCT user_id) as users, COALESCE(SUM(amount),0) as total
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' GROUP BY range`
+        )
+        .bind(date)
+        .all();
+
+      const successByRange = await env.daily_records_db
+        .prepare(
+          `SELECT ${RANGE_CASE} as range, COUNT(*) as total,
+                  SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as completed,
+                  AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_minutes
+           FROM deposits WHERE date(create_time) = ? GROUP BY range`
+        )
+        .bind(date)
+        .all();
+
+      const byChannel = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders,
+                  SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as comp_orders,
+                  COUNT(DISTINCT CASE WHEN status = 'COMPLETE' THEN user_id END) as comp_users,
+                  COALESCE(SUM(CASE WHEN status = 'COMPLETE' THEN amount ELSE 0 END),0) as comp_amount,
+                  AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_mins
+           FROM deposits WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
+        )
+        .bind(date)
+        .all();
+
+      return Response.json({
+        date,
+        amountRange: amountRange.results,
+        successByRange: successByRange.results,
+        byChannel: byChannel.results,
       });
     }
 
