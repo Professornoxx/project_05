@@ -37,6 +37,13 @@ CHANNEL_FIELD_CANDIDATES = [
 # "resultDate" is when a deposit order actually completed (vs. createTime,
 # when it was initiated) — confirmed present in real deposit export data.
 RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "update_time"]
+# withdraw-only: "reviewTime" marks the under-review -> processing transition
+# (status 0->1), "callbackTime" marks the payment-provider completion
+# callback (status 1->2) — both confirmed present in real withdraw export
+# headers, used for the Withdrawal Analysis processing/completion-time and
+# aging panels.
+REVIEW_TIME_FIELD_CANDIDATES = ["reviewTime", "review_time"]
+CALLBACK_TIME_FIELD_CANDIDATES = ["callbackTime", "callback_time"]
 
 
 def _pick(row: dict, candidates: list[str]):
@@ -85,6 +92,8 @@ def extract_common_fields(row: dict) -> dict:
         "create_time": _coerce(_pick(row, TIME_FIELD_CANDIDATES)),
         "channel": _coerce(_pick(row, CHANNEL_FIELD_CANDIDATES)),
         "result_time": _coerce(_pick(row, RESULT_TIME_FIELD_CANDIDATES)),
+        "review_time": _coerce(_pick(row, REVIEW_TIME_FIELD_CANDIDATES)),
+        "callback_time": _coerce(_pick(row, CALLBACK_TIME_FIELD_CANDIDATES)),
     }
 
 

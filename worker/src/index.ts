@@ -380,6 +380,96 @@ export default {
       });
     }
 
+    // Withdrawal Analysis (dashboard section 4): channel-wise processing
+    // (create->review) and completion (review->complete) time buckets,
+    // "aging" charts for currently-open orders, and a 4-day completed
+    // <4h vs >4h comparison. Scoped to a single date (create_time's day)
+    // except the two "aging" charts, which are live snapshots of whatever
+    // is currently open (status 0/1) regardless of date, and the 4-day
+    // chart, which always covers the 4 days ending on the selected date.
+    // review_time/callback_time only exist for rows synced after that
+    // column was added — older rows show as NULL and fall out of these
+    // buckets, same caveat as channel on the section 3 tables.
+    if (url.pathname === "/api/dashboard/withdrawal-analysis" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const date = url.searchParams.get("date") || todayIST();
+
+      const DURATION_BUCKET = (col: string) => `CASE
+        WHEN ${col} IS NULL THEN NULL
+        WHEN ${col} < 1 THEN '<1H'
+        WHEN ${col} < 3 THEN '1-3H'
+        WHEN ${col} < 6 THEN '3-6H'
+        WHEN ${col} < 12 THEN '6-12H'
+        ELSE '>12H' END`;
+      const HOURS_BETWEEN = (a: string, b: string) => `(julianday(${b}) - julianday(${a})) * 24`;
+
+      const channelProcessingTime = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(channel, 'Unknown') as channel,
+                  ${DURATION_BUCKET(HOURS_BETWEEN("create_time", "review_time"))} as bucket, COUNT(*) as cnt
+           FROM withdrawals WHERE date(create_time) = ? AND review_time IS NOT NULL
+           GROUP BY channel, bucket`
+        )
+        .bind(date)
+        .all();
+
+      const channelCompletionTime = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(channel, 'Unknown') as channel,
+                  ${DURATION_BUCKET(HOURS_BETWEEN("review_time", "callback_time"))} as bucket, COUNT(*) as cnt
+           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND callback_time IS NOT NULL AND review_time IS NOT NULL
+           GROUP BY channel, bucket`
+        )
+        .bind(date)
+        .all();
+
+      // Live snapshot (not date-scoped): every currently-open order,
+      // however old, bucketed by how long it's been sitting.
+      const processingAging = await env.daily_records_db
+        .prepare(
+          `SELECT CASE
+             WHEN h < 6 THEN '3-6h' WHEN h < 12 THEN '6-12h' WHEN h < 24 THEN '12-24h' ELSE '>24h' END as bucket,
+             COUNT(*) as cnt
+           FROM (SELECT ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
+                 FROM withdrawals WHERE CAST(status AS REAL) = 1)
+           WHERE h >= 3 GROUP BY bucket`
+        )
+        .all();
+
+      const inReviewAging = await env.daily_records_db
+        .prepare(
+          `SELECT CASE WHEN h < 3 THEN '1-3h' WHEN h < 6 THEN '3-6h' ELSE '>6h' END as bucket, COUNT(*) as cnt
+           FROM (SELECT ${HOURS_BETWEEN("create_time", "datetime('now')")} as h
+                 FROM withdrawals WHERE CAST(status AS REAL) = 0)
+           WHERE h >= 1 GROUP BY bucket`
+        )
+        .all();
+
+      const completedLast4Days = await env.daily_records_db
+        .prepare(
+          `SELECT date(create_time) as d,
+                  SUM(CASE WHEN ${HOURS_BETWEEN("create_time", "callback_time")} < 4 THEN 1 ELSE 0 END) as under4h,
+                  SUM(CASE WHEN ${HOURS_BETWEEN("create_time", "callback_time")} >= 4 THEN 1 ELSE 0 END) as over4h
+           FROM withdrawals
+           WHERE CAST(status AS REAL) = 2 AND callback_time IS NOT NULL
+             AND date(create_time) BETWEEN date(?, '-3 days') AND date(?)
+           GROUP BY d ORDER BY d`
+        )
+        .bind(date, date)
+        .all();
+
+      return Response.json({
+        date,
+        channelProcessingTime: channelProcessingTime.results,
+        channelCompletionTime: channelCompletionTime.results,
+        processingAging: processingAging.results,
+        inReviewAging: inReviewAging.results,
+        completedLast4Days: completedLast4Days.results,
+      });
+    }
+
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
     // analytics view, grouped with Dashboard, not Configuration).
     if (url.pathname === "/master-stats" && request.method === "GET") {

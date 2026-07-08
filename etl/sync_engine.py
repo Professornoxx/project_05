@@ -36,7 +36,7 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # clause like this).
 CHUNK_SIZE = 16  # 6 params/row (wallet_details): 16*6=96, under the ~100 ceiling
 DEPOSIT_CHUNK_SIZE = 12  # deposits has 2 extra columns (channel, result_time): 12*8=96, same ceiling
-WITHDRAW_CHUNK_SIZE = 14  # withdrawals has 1 extra column (channel): 14*7=98, same ceiling
+WITHDRAW_CHUNK_SIZE = 11  # withdrawals has 3 extra columns (channel, review_time, callback_time): 11*9=99, same ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
@@ -94,8 +94,9 @@ def fetch_export_rows(source: str, begin_time: str, end_time: str) -> list[dict]
 def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
     """Returns (rows_written, touched_user_ids). deposits gets 2 extra
     columns (channel, result_time) for the Deposit Analysis dashboard
-    section; withdrawals gets 1 extra column (channel) for the Withdraw
-    Analysis section — wallet_details sticks to the lean 6-column shape."""
+    section; withdrawals gets 3 extra columns (channel, review_time,
+    callback_time) for the Withdraw Analysis section — wallet_details
+    sticks to the lean 6-column shape."""
     if not rows:
         return 0, []
 
@@ -119,10 +120,10 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                     fields["channel"], fields["result_time"], now,
                 ])
             elif is_withdraw:
-                values_sql.append("(?, ?, ?, ?, ?, ?, ?)")
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 params.extend([
                     key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
-                    fields["channel"], now,
+                    fields["channel"], fields["review_time"], fields["callback_time"], now,
                 ])
             else:
                 values_sql.append("(?, ?, ?, ?, ?, ?)")
@@ -144,11 +145,12 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
             )
         elif is_withdraw:
             sql = (
-                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, synced_at) "
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, review_time, callback_time, synced_at) "
                 f"VALUES {','.join(values_sql)} "
                 "ON CONFLICT(record_key) DO UPDATE SET "
                 "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
-                "create_time = excluded.create_time, channel = excluded.channel, synced_at = excluded.synced_at"
+                "create_time = excluded.create_time, channel = excluded.channel, "
+                "review_time = excluded.review_time, callback_time = excluded.callback_time, synced_at = excluded.synced_at"
             )
         else:
             sql = (
