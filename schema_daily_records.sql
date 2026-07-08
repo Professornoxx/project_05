@@ -26,11 +26,14 @@ CREATE TABLE IF NOT EXISTS deposits (
   amount REAL,
   status TEXT,
   create_time TEXT,
+  channel TEXT,       -- e.g. "Pay Center-coinsPay" — for Deposit Channel Analysis
+  result_time TEXT,   -- when the order actually completed (vs. create_time = initiated)
   raw_json TEXT,
   synced_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id);
 CREATE INDEX IF NOT EXISTS idx_deposits_create_time ON deposits(create_time);
+CREATE INDEX IF NOT EXISTS idx_deposits_channel ON deposits(channel);
 
 CREATE TABLE IF NOT EXISTS withdrawals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

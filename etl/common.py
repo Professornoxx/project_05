@@ -25,6 +25,13 @@ STATUS_FIELD_CANDIDATES = [
     "0 Under review, 1 Payment processing, 2 Completed, 3 Rejected, 4 Failed", "状态",
 ]
 TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"]
+# "pay channel" (with space) carries values like "Pay Center-coinsPay" —
+# confirmed against real deposit export data; "channel"/"appChannel" are
+# fallbacks for sources that don't use that exact field name.
+CHANNEL_FIELD_CANDIDATES = ["pay channel", "channel", "appChannel", "Channel Order ID", "渠道"]
+# "resultDate" is when a deposit order actually completed (vs. createTime,
+# when it was initiated) — confirmed present in real deposit export data.
+RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "update_time"]
 
 
 def _pick(row: dict, candidates: list[str]):
@@ -71,6 +78,8 @@ def extract_common_fields(row: dict) -> dict:
         "amount": _coerce(_pick(row, AMOUNT_FIELD_CANDIDATES)),
         "status": _coerce(_pick(row, STATUS_FIELD_CANDIDATES)),
         "create_time": _coerce(_pick(row, TIME_FIELD_CANDIDATES)),
+        "channel": _coerce(_pick(row, CHANNEL_FIELD_CANDIDATES)),
+        "result_time": _coerce(_pick(row, RESULT_TIME_FIELD_CANDIDATES)),
     }
 
 

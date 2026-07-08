@@ -34,7 +34,8 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # with many separate single-row statements, where each statement's own
 # param count never left single digits, not one big multi-row VALUES
 # clause like this).
-CHUNK_SIZE = 16
+CHUNK_SIZE = 16  # 6 params/row (withdrawals, wallet_details): 16*6=96, under the ~100 ceiling
+DEPOSIT_CHUNK_SIZE = 12  # deposits has 2 extra columns (channel, result_time): 12*8=96, same ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
@@ -83,35 +84,56 @@ def fetch_export_rows(source: str, begin_time: str, end_time: str) -> list[dict]
 
 
 def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
-    """Returns (rows_written, touched_user_ids)."""
+    """Returns (rows_written, touched_user_ids). deposits gets 2 extra
+    columns (channel, result_time) for the Deposit Analysis dashboard
+    section — withdrawals/wallet_details stick to the lean 6-column shape."""
     if not rows:
         return 0, []
 
+    is_deposit = table == "deposits"
+    chunk_size = DEPOSIT_CHUNK_SIZE if is_deposit else CHUNK_SIZE
     now = datetime.now(timezone.utc).isoformat()
     touched_user_ids = []
 
-    for i in range(0, len(rows), CHUNK_SIZE):
-        chunk = rows[i : i + CHUNK_SIZE]
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i : i + chunk_size]
         values_sql = []
         params = []
         for row in chunk:
             key = common.record_key(row)
             fields = common.extract_common_fields(row)
-            values_sql.append("(?, ?, ?, ?, ?, ?)")
-            params.extend([key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"], now])
+            if is_deposit:
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?)")
+                params.extend([
+                    key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
+                    fields["channel"], fields["result_time"], now,
+                ])
+            else:
+                values_sql.append("(?, ?, ?, ?, ?, ?)")
+                params.extend([key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"], now])
             if fields["user_id"] is not None:
                 try:
                     touched_user_ids.append(int(float(fields["user_id"])))
                 except (ValueError, TypeError):
                     pass
 
-        sql = (
-            f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, synced_at) "
-            f"VALUES {','.join(values_sql)} "
-            "ON CONFLICT(record_key) DO UPDATE SET "
-            "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
-            "create_time = excluded.create_time, synced_at = excluded.synced_at"
-        )
+        if is_deposit:
+            sql = (
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, result_time, synced_at) "
+                f"VALUES {','.join(values_sql)} "
+                "ON CONFLICT(record_key) DO UPDATE SET "
+                "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
+                "create_time = excluded.create_time, channel = excluded.channel, "
+                "result_time = excluded.result_time, synced_at = excluded.synced_at"
+            )
+        else:
+            sql = (
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, synced_at) "
+                f"VALUES {','.join(values_sql)} "
+                "ON CONFLICT(record_key) DO UPDATE SET "
+                "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
+                "create_time = excluded.create_time, synced_at = excluded.synced_at"
+            )
         cf_client.d1_query(DAILY_DB_ID, sql, params)
 
     return len(rows), touched_user_ids
