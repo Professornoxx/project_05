@@ -15,6 +15,19 @@ import type { ChunkRow } from "./lib/chunkedUpsert";
 const DAILY_CLEANUP_CRON = "0 3 * * *";
 const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
 
+// Source data's create_time values are IST-labeled (naive, no timezone
+// suffix) — confirmed by a deposit timestamped 10:50 when actual UTC time
+// was only 05:31 (only possible if the stored time is IST = UTC+5:30).
+// "Today" for the dashboard must therefore be computed in IST, not UTC —
+// using UTC's date here would occasionally show yesterday's tail data (or
+// miss the first few real hours of IST-today) during the ~05:30 UTC window
+// each day where the two calendar dates can disagree.
+function todayIST(): string {
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const shifted = new Date(Date.now() + IST_OFFSET_MS);
+  return shifted.toISOString().slice(0, 10);
+}
+
 // Used by JSON API routes: 401 with no redirect, for programmatic/curl callers.
 // area picks which of the two independent sessions (dashboard vs config) to check.
 function requireAdmin(request: Request, env: Env, area: AuthArea): Response | null {
@@ -189,7 +202,7 @@ export default {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
-      const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+      const date = url.searchParams.get("date") || todayIST();
 
       const depositAgg = await env.daily_records_db
         .prepare(
@@ -243,7 +256,7 @@ export default {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
-      const date = url.searchParams.get("date") || new Date().toISOString().slice(0, 10);
+      const date = url.searchParams.get("date") || todayIST();
 
       const RANGE_CASE = `CASE
         WHEN amount >= 200 AND amount <= 299 THEN '200-299'

@@ -69,8 +69,12 @@ export const HOME_CONTENT_HTML = `
 
 <script>
 function todayStr() {
-  const d = new Date();
-  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+  // IST, not the viewer's browser timezone — must match the server's
+  // todayIST() default so "TODAY" always means the same calendar date
+  // regardless of who's looking at the dashboard or from where.
+  const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+  const d = new Date(Date.now() + IST_OFFSET_MS);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth()+1).padStart(2,'0') + '-' + String(d.getUTCDate()).padStart(2,'0');
 }
 function fmtInr(n) {
   if (n === null || n === undefined) return '—';
