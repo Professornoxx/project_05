@@ -311,10 +311,13 @@ export default {
     }
 
     // Withdraw Analysis (dashboard section 3): hourly success-rate tables
-    // by amount range and by channel. "Success" here matches the Home KPI
-    // card's withdraw definition — in-review + processing + complete
-    // (status 0/1/2), NOT "completed only" like deposits — since a pending
-    // withdrawal isn't a failure the way a pending deposit effectively is.
+    // by amount range and by channel. "Success" = status 2 (Completed) only
+    // — same strict definition as Deposit Analysis's status = 'COMPLETE'.
+    // NOTE this deliberately differs from the Home KPI card's "Total
+    // Withdraw" definition (status 0/1/2, in-review+processing+complete),
+    // which measures claimed+pending+completed volume, not completion rate
+    // — using that lenient definition here made every cell read ~100%
+    // since few withdrawals are ever explicitly rejected/failed.
     if (url.pathname === "/api/dashboard/withdraw-analysis" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -332,7 +335,7 @@ export default {
         WHEN amount >= 10000 AND amount <= 19999 THEN '10000-19999'
         WHEN amount >= 20000 AND amount <= 50000 THEN '20000-50000'
         ELSE 'Other' END`;
-      const IS_SUCCESS = `CAST(status AS REAL) IN (0,1,2)`;
+      const IS_SUCCESS = `CAST(status AS REAL) = 2`;
 
       const byRangeHour = await env.daily_records_db
         .prepare(
