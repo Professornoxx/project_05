@@ -8,6 +8,7 @@ import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboard
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
 import { WITHDRAW_ANALYSIS_CONTENT_HTML } from "./lib/withdrawAnalysisContent";
+import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -184,7 +185,7 @@ export default {
       }
       const content =
         dashboardRoute.key === "home"
-          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),

@@ -128,6 +128,7 @@ function reloadAllSections(date) {
   loadStats(date);
   if (typeof window.loadDepositAnalysis === 'function') window.loadDepositAnalysis(date);
   if (typeof window.loadWithdrawAnalysis === 'function') window.loadWithdrawAnalysis(date);
+  if (typeof window.loadWithdrawalAnalysis === 'function') window.loadWithdrawalAnalysis(date);
 }
 
 document.getElementById('resetTodayBtn').onclick = () => {
