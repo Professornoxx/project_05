@@ -121,12 +121,21 @@ async function loadStats(date) {
   }
 }
 
+// Sections 2 (Deposit Analysis) and 3 (Withdraw Analysis) register their
+// loaders here so the day picker drives all three sections at once instead
+// of only section 1 — they each default to today server-side otherwise.
+function reloadAllSections(date) {
+  loadStats(date);
+  if (typeof window.loadDepositAnalysis === 'function') window.loadDepositAnalysis(date);
+  if (typeof window.loadWithdrawAnalysis === 'function') window.loadWithdrawAnalysis(date);
+}
+
 document.getElementById('resetTodayBtn').onclick = () => {
   picker.value = todayStr();
-  loadStats(picker.value);
+  reloadAllSections(picker.value);
 };
-picker.onchange = () => loadStats(picker.value);
+picker.onchange = () => reloadAllSections(picker.value);
 
-loadStats(picker.value);
+reloadAllSections(picker.value);
 </script>
 `;

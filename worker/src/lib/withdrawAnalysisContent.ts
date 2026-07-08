@@ -97,11 +97,11 @@ function waRenderTable(tbodySelector, keys, pivoted, totalsByKey) {
   document.querySelector(tbodySelector).innerHTML = rows.join('') || '<tr><td colspan="26">No data</td></tr>';
 }
 
-async function loadWithdrawAnalysis() {
+async function loadWithdrawAnalysis(date) {
   const statusEl = document.getElementById('waStatus');
   statusEl.textContent = 'Loading...';
   try {
-    const res = await fetch('/api/dashboard/withdraw-analysis');
+    const res = await fetch('/api/dashboard/withdraw-analysis' + (date ? '?date=' + date : ''));
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
 
@@ -140,6 +140,9 @@ function waDownloadCsv(tableEl, filename) {
 document.getElementById('exportWaRangeBtn').onclick = () => waDownloadCsv(document.getElementById('waRangeTable'), 'withdraw-hourly-by-range.csv');
 document.getElementById('exportWaChannelBtn').onclick = () => waDownloadCsv(document.getElementById('waChannelTable'), 'withdraw-hourly-by-channel.csv');
 
+// Exposed so the Home page's day picker (loaded after this script) can
+// re-trigger this section when the selected date changes.
+window.loadWithdrawAnalysis = loadWithdrawAnalysis;
 loadWithdrawAnalysis();
 </script>
 `;
