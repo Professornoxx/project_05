@@ -26,9 +26,15 @@
   ],
 
   "triggers": {
-    // Hourly: pulls wallet/deposit/withdraw exports.
-    // Daily at 03:00 UTC: purges sync_runs log entries older than 35 days.
-    "crons": ["0 * * * *", "0 3 * * *"]
+    // The hourly sync cron was retired — deposit/withdraw/wallet syncing now
+    // runs on GitHub Actions (Python ETL, see /etl and /.github/workflows),
+    // which has none of the CPU-time/subrequest/self-fetch limits this
+    // Worker-based version kept hitting. Leaving this Worker's own hourly
+    // cron active just produced a second, always-failing set of sync_runs
+    // log entries (error 1042 self-fetch block) alongside the real ones.
+    // Daily at 03:00 UTC: purges sync_runs log entries older than 35 days —
+    // kept here since cleanup.ts still works fine as a Worker cron.
+    "crons": ["0 3 * * *"]
   },
 
   "vars": {
