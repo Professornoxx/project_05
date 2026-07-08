@@ -26,9 +26,14 @@ STATUS_FIELD_CANDIDATES = [
 ]
 TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"]
 # "pay channel" (with space) carries values like "Pay Center-coinsPay" —
-# confirmed against real deposit export data; "channel"/"appChannel" are
-# fallbacks for sources that don't use that exact field name.
-CHANNEL_FIELD_CANDIDATES = ["pay channel", "channel", "appChannel", "Channel Order ID", "渠道"]
+# confirmed against real deposit export data; "Withdraw Payment Channels" is
+# the withdraw export's equivalent field (confirmed against real withdraw
+# export headers) and must come before "Channel Order ID", which looks like
+# a channel name but is actually an unrelated order-ID column that withdraw
+# rows also happen to have. "channel"/"appChannel" are generic fallbacks.
+CHANNEL_FIELD_CANDIDATES = [
+    "pay channel", "Withdraw Payment Channels", "channel", "appChannel", "Channel Order ID", "渠道",
+]
 # "resultDate" is when a deposit order actually completed (vs. createTime,
 # when it was initiated) — confirmed present in real deposit export data.
 RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "update_time"]
@@ -113,6 +118,10 @@ def today_ist_date() -> datetime:
 
 def fmt_date(d: datetime) -> str:
     return d.strftime("%Y-%m-%d")
+
+
+def shift_date(date_str: str, days: int) -> str:
+    return fmt_date(datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=days))
 
 
 def deposit_withdraw_window(sync_window_days: int = 5) -> tuple[str, str]:

@@ -7,6 +7,7 @@ import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
+import { WITHDRAW_ANALYSIS_CONTENT_HTML } from "./lib/withdrawAnalysisContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -183,7 +184,7 @@ export default {
       }
       const content =
         dashboardRoute.key === "home"
-          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -306,6 +307,73 @@ export default {
         amountRange: amountRange.results,
         successByRange: successByRange.results,
         byChannel: byChannel.results,
+      });
+    }
+
+    // Withdraw Analysis (dashboard section 3): hourly success-rate tables
+    // by amount range and by channel. "Success" here matches the Home KPI
+    // card's withdraw definition — in-review + processing + complete
+    // (status 0/1/2), NOT "completed only" like deposits — since a pending
+    // withdrawal isn't a failure the way a pending deposit effectively is.
+    if (url.pathname === "/api/dashboard/withdraw-analysis" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const date = url.searchParams.get("date") || todayIST();
+
+      const RANGE_CASE = `CASE
+        WHEN amount >= 200 AND amount <= 299 THEN '200-299'
+        WHEN amount >= 300 AND amount <= 499 THEN '300-499'
+        WHEN amount >= 500 AND amount <= 999 THEN '500-999'
+        WHEN amount >= 1000 AND amount <= 1999 THEN '1000-1999'
+        WHEN amount >= 2000 AND amount <= 2499 THEN '2000-2499'
+        WHEN amount >= 2500 AND amount <= 4999 THEN '2500-4999'
+        WHEN amount >= 5000 AND amount <= 9999 THEN '5000-9999'
+        WHEN amount >= 10000 AND amount <= 19999 THEN '10000-19999'
+        WHEN amount >= 20000 AND amount <= 50000 THEN '20000-50000'
+        ELSE 'Other' END`;
+      const IS_SUCCESS = `CAST(status AS REAL) IN (0,1,2)`;
+
+      const byRangeHour = await env.daily_records_db
+        .prepare(
+          `SELECT ${RANGE_CASE} as range, CAST(strftime('%H', create_time) AS INTEGER) as hour,
+                  COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
+           FROM withdrawals WHERE date(create_time) = ? GROUP BY range, hour`
+        )
+        .bind(date)
+        .all();
+
+      const rangeTotals = await env.daily_records_db
+        .prepare(
+          `SELECT ${RANGE_CASE} as range, COUNT(*) as total_orders
+           FROM withdrawals WHERE date(create_time) = ? GROUP BY range`
+        )
+        .bind(date)
+        .all();
+
+      const byChannelHour = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(channel, 'Unknown') as channel, CAST(strftime('%H', create_time) AS INTEGER) as hour,
+                  COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
+           FROM withdrawals WHERE date(create_time) = ? GROUP BY channel, hour`
+        )
+        .bind(date)
+        .all();
+
+      const channelTotals = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders
+           FROM withdrawals WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
+        )
+        .bind(date)
+        .all();
+
+      return Response.json({
+        date,
+        byRangeHour: byRangeHour.results,
+        rangeTotals: rangeTotals.results,
+        byChannelHour: byChannelHour.results,
+        channelTotals: channelTotals.results,
       });
     }
 

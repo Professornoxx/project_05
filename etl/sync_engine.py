@@ -34,8 +34,9 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # with many separate single-row statements, where each statement's own
 # param count never left single digits, not one big multi-row VALUES
 # clause like this).
-CHUNK_SIZE = 16  # 6 params/row (withdrawals, wallet_details): 16*6=96, under the ~100 ceiling
+CHUNK_SIZE = 16  # 6 params/row (wallet_details): 16*6=96, under the ~100 ceiling
 DEPOSIT_CHUNK_SIZE = 12  # deposits has 2 extra columns (channel, result_time): 12*8=96, same ceiling
+WITHDRAW_CHUNK_SIZE = 14  # withdrawals has 1 extra column (channel): 14*7=98, same ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
@@ -45,13 +46,20 @@ def fetch_export_rows(source: str, begin_time: str, end_time: str) -> list[dict]
     url = common.get_export_url(source)
     token = common.get_bearer_token()
 
+    # withdraw/export's queryDate[1] is EXCLUSIVE (confirmed live: same-day
+    # range 2026-07-08..2026-07-08 returned 0 rows, but 2026-07-08..2026-07-09
+    # returned same-day data up to 15:57) — unlike deposit/export, whose
+    # queryDate[1] is inclusive of that day. Without this +1 day shift, every
+    # withdraw sync silently excludes the current day's data.
+    request_end_time = common.shift_date(end_time, days=1) if source == "withdraw" else end_time
+
     params = {
         "packageId": PACKAGE_ID,
         "pageNum": "1",
         "pageSize": "100000",
         "useUpiQuery": "true",
         "queryDate[0]": begin_time,
-        "queryDate[1]": end_time,
+        "queryDate[1]": request_end_time,
     }
     started = time.time()
     try:
@@ -86,12 +94,14 @@ def fetch_export_rows(source: str, begin_time: str, end_time: str) -> list[dict]
 def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
     """Returns (rows_written, touched_user_ids). deposits gets 2 extra
     columns (channel, result_time) for the Deposit Analysis dashboard
-    section — withdrawals/wallet_details stick to the lean 6-column shape."""
+    section; withdrawals gets 1 extra column (channel) for the Withdraw
+    Analysis section — wallet_details sticks to the lean 6-column shape."""
     if not rows:
         return 0, []
 
     is_deposit = table == "deposits"
-    chunk_size = DEPOSIT_CHUNK_SIZE if is_deposit else CHUNK_SIZE
+    is_withdraw = table == "withdrawals"
+    chunk_size = DEPOSIT_CHUNK_SIZE if is_deposit else WITHDRAW_CHUNK_SIZE if is_withdraw else CHUNK_SIZE
     now = datetime.now(timezone.utc).isoformat()
     touched_user_ids = []
 
@@ -107,6 +117,12 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                 params.extend([
                     key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
                     fields["channel"], fields["result_time"], now,
+                ])
+            elif is_withdraw:
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?)")
+                params.extend([
+                    key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
+                    fields["channel"], now,
                 ])
             else:
                 values_sql.append("(?, ?, ?, ?, ?, ?)")
@@ -125,6 +141,14 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                 "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
                 "create_time = excluded.create_time, channel = excluded.channel, "
                 "result_time = excluded.result_time, synced_at = excluded.synced_at"
+            )
+        elif is_withdraw:
+            sql = (
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, synced_at) "
+                f"VALUES {','.join(values_sql)} "
+                "ON CONFLICT(record_key) DO UPDATE SET "
+                "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
+                "create_time = excluded.create_time, channel = excluded.channel, synced_at = excluded.synced_at"
             )
         else:
             sql = (
