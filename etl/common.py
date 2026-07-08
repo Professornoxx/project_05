@@ -129,13 +129,21 @@ def is_first_wallet_run_of_day() -> bool:
     """True exactly once per IST calendar day — mirrors isFirstWalletRunOfDay()
     in exportClient.ts, using the SAME KV key, so the Python and (now retired)
     Workers logic can never disagree about which run is "first" even if both
-    were ever run side by side."""
+    were ever run side by side.
+
+    Read-only: does NOT mark the day as run. Call mark_wallet_run_of_day()
+    only after the sync actually succeeds, so a failed first run stays
+    "first" and retries still pull the previous day rather than silently
+    skipping it."""
     today_str = fmt_date(today_ist_date())
     last_run_date = cf_client.kv_get(WALLET_LAST_RUN_DATE_KEY)
-    if last_run_date == today_str:
-        return False
-    cf_client.kv_put(WALLET_LAST_RUN_DATE_KEY, today_str)
-    return True
+    return last_run_date != today_str
+
+
+def mark_wallet_run_of_day() -> None:
+    """Records today's IST date as the last successful wallet run. Call this
+    only after a successful sync — see is_first_wallet_run_of_day()."""
+    cf_client.kv_put(WALLET_LAST_RUN_DATE_KEY, fmt_date(today_ist_date()))
 
 
 def wallet_window(is_first_run_of_day: bool) -> tuple[str, str]:

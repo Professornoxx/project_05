@@ -15,6 +15,8 @@ def main():
     begin_time, end_time = common.wallet_window(is_first)
     print(f"is_first_wallet_run_of_day={is_first}")
     sync_engine.sync_source("wallet", begin_time, end_time)
+    if is_first:
+        common.mark_wallet_run_of_day()
 
 
 if __name__ == "__main__":
