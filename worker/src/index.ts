@@ -12,6 +12,7 @@ import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisConten
 import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
 import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
+import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -190,7 +191,7 @@ export default {
         dashboardRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
           : dashboardRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML
+          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -440,6 +441,62 @@ export default {
         total,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
         rows: merged.slice(start, start + pageSize),
+      });
+    }
+
+    // Action Center section 4: Active Users. Mirror of section 2 (Inactive
+    // Users) but the opposite window — inactive_days capped low instead of
+    // floored high. Same master_db.users dependency as sections 1-2 (total
+    // deposit / wallet balance / last_active_time have no equivalent in
+    // daily_records_db, unlike section 3's deposit totals) — same staleness
+    // caveat flagged there applies here too.
+    if (url.pathname === "/api/dashboard/action-center/active-users" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      const [minLevel, maxLevel, maxDays] = tier === "low" ? [2, 4, 10] : [5, 14, 15];
+
+      const BASE = `FROM (
+          SELECT user_id, total_deposit, user_balance, last_active_time,
+                 ${CURRENT_LEVEL} as current_level,
+                 CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+        )
+        WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?`;
+
+      const countRow = await env.master_db
+        .prepare(`SELECT COUNT(*) as c ${BASE}`)
+        .bind(minLevel, maxLevel, maxDays)
+        .first<{ c: number }>();
+
+      const rows = await env.master_db
+        .prepare(
+          `SELECT user_id, current_level, total_deposit, user_balance, inactive_days
+           ${BASE}
+           ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
+        )
+        .bind(minLevel, maxLevel, maxDays, pageSize, (page - 1) * pageSize)
+        .all();
+
+      const total = countRow?.c ?? 0;
+      return Response.json({
+        tier,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
       });
     }
 
