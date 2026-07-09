@@ -51,20 +51,17 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
   .wl-4day-legend { display: flex; gap: 18px; margin-bottom: 6px; font-size: 12px; color: #4b5563; }
   .wl-4day-legend span { display: inline-flex; align-items: center; gap: 7px; }
   .wl-4day-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-  .wl-4day-chart { position: relative; height: 280px; margin-top: 8px; padding-left: 46px; }
-  .wl-4day-gridline { position: absolute; left: 46px; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
-  .wl-4day-gridline span { position: absolute; left: -46px; top: -6px; width: 40px; text-align: right; }
-  .wl-4day-groups { position: absolute; left: 46px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; gap: 26px; overflow-x: auto; }
-  .wl-4day-group { display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; min-width: 60px; }
-  .wl-4day-bars { display: flex; align-items: flex-end; gap: 6px; height: 100%; }
-  .wl-4day-bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-  .wl-4day-bar { width: 32px; min-height: 2px; border-radius: 5px 5px 0 0; }
+  .wl-4day-chart { position: relative; height: 300px; margin-top: 10px; padding-left: 50px; }
+  .wl-4day-gridline { position: absolute; left: 50px; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
+  .wl-4day-gridline span { position: absolute; left: -50px; top: -6px; width: 44px; text-align: right; }
+  .wl-4day-groups { position: absolute; left: 50px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; justify-content: space-evenly; }
+  .wl-4day-group { display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; flex: 1; max-width: 160px; }
+  .wl-4day-bars { display: flex; align-items: flex-end; justify-content: center; gap: 10px; height: 100%; width: 100%; }
+  .wl-4day-bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; flex: 1; max-width: 64px; }
+  .wl-4day-bar { width: 70%; min-height: 2px; border-radius: 5px 5px 0 0; }
   .wl-4day-bar-value { font-size: 11px; font-weight: 700; text-align: center; color: #1f2430; }
   .wl-4day-bar-pct { font-size: 9px; color: #6b7280; text-align: center; }
   .wl-4day-date { font-size: 11px; color: #9ca3af; font-weight: 500; margin-top: 8px; }
-
-  .wl-half-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; }
-  @media (max-width: 900px) { .wl-half-grid { grid-template-columns: 1fr; } }
 
   #wlStatus, #wl4dSummary { font-size: 12.5px; color: #9ca3af; margin-top: 6px; }
   #wl4dSummary { font-weight: 500; color: #6b7280; }
@@ -115,27 +112,25 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
   </div>
 </div>
 
-<div class="wl-half-grid">
-  <div class="wl-panel accent-green">
-    <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Completed Orders — &lt;4h vs &gt;4h (Last 7 Days)</div>
-      <button class="wl-excel-btn" id="exportWl4dBtn">📥 Excel</button>
-    </div>
-    <div id="wl4dSummary"></div>
-    <div class="wl-4day-legend"><span><i style="background:#1D9E75"></i>&lt;4h</span><span><i style="background:#E24B4A"></i>&gt;4h</span></div>
-    <div class="wl-4day-chart" id="wl4dayChart"></div>
+<div class="wl-panel accent-green" style="margin-bottom:22px;">
+  <div class="wl-panel-head">
+    <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Completed Orders — &lt;4h vs &gt;4h (Last 7 Days)</div>
+    <button class="wl-excel-btn" id="exportWl4dBtn">📥 Excel</button>
   </div>
+  <div id="wl4dSummary"></div>
+  <div class="wl-4day-legend"><span><i style="background:#1D9E75"></i>&lt;4h</span><span><i style="background:#E24B4A"></i>&gt;4h</span></div>
+  <div class="wl-4day-chart" id="wl4dayChart"></div>
+</div>
 
-  <div class="wl-panel accent-amber">
-    <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">💰</span>Withdrawal Processing — Amount Range</div>
-      <button class="wl-excel-btn" id="exportWlRangeBtn">📥 Excel</button>
-    </div>
-    <table class="wl-table" id="wlRangeTable">
-      <thead><tr><th>Amount Range</th><th>3-6H</th><th>6-12H</th><th>12-24H</th><th>&gt;24H</th><th>Total Orders</th><th>Total Amount</th></tr></thead>
-      <tbody><tr><td colspan="7">Loading...</td></tr></tbody>
-    </table>
+<div class="wl-panel accent-amber" style="margin-bottom:22px;">
+  <div class="wl-panel-head">
+    <div class="wl-panel-title"><span class="wl-icon-badge">💰</span>Withdrawal Processing — Amount Range</div>
+    <button class="wl-excel-btn" id="exportWlRangeBtn">📥 Excel</button>
   </div>
+  <table class="wl-table" id="wlRangeTable">
+    <thead><tr><th>Amount Range</th><th>3-6H</th><th>6-12H</th><th>12-24H</th><th>&gt;24H</th><th>Total Orders</th><th>Total Amount</th></tr></thead>
+    <tbody><tr><td colspan="7">Loading...</td></tr></tbody>
+  </table>
 </div>
 
 <div id="wlStatus"></div>
