@@ -9,6 +9,7 @@ import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
 import { WITHDRAW_ANALYSIS_CONTENT_HTML } from "./lib/withdrawAnalysisContent";
 import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisContent";
+import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -186,11 +187,82 @@ export default {
       const content =
         dashboardRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
+          : dashboardRoute.key === "action-center"
+          ? ACTION_CENTER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
         { headers: { "content-type": "text/html; charset=utf-8" } }
       );
+    }
+
+    // Action Center section 1: VIP Near Upgrade. VIP level is computed live
+    // from total_deposit against the brackets below — this is intentionally
+    // NOT the same as master_db.users.member_level (whatever the upstream
+    // system currently has synced); the point of this list is to surface
+    // users whose deposit total already qualifies them for a bracket bump
+    // regardless of whether the source system has caught up yet.
+    // Agent is always "Unassigned" for now — no real agent-assignment data
+    // source exists yet (see Search User page, blocked on the same gap).
+    if (url.pathname === "/api/dashboard/action-center/vip-near-upgrade" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+
+      // WHEN d < X THEN Y pairs are the upper bound of each VIP bracket —
+      // shared by both the "current level" and "next level's floor" CASE
+      // expressions below, just returning a different value per branch.
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const NEXT_LEVEL_MIN = `CASE
+        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
+        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
+        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
+        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
+        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+
+      const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
+
+      const BASE = `FROM (
+          SELECT user_id, total_deposit, last_active_time,
+                 ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+          FROM users WHERE total_deposit IS NOT NULL
+        )
+        WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+          AND (next_level_min - total_deposit) BETWEEN 1 AND ?`;
+
+      const countRow = await env.master_db
+        .prepare(`SELECT COUNT(*) as c ${BASE}`)
+        .bind(minLevel, maxLevel, maxGap)
+        .first<{ c: number }>();
+
+      const rows = await env.master_db
+        .prepare(
+          `SELECT user_id, total_deposit, current_level, current_level + 1 as next_level,
+                  (next_level_min - total_deposit) as gap,
+                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+           ${BASE}
+           ORDER BY gap ASC LIMIT ? OFFSET ?`
+        )
+        .bind(minLevel, maxLevel, maxGap, pageSize, (page - 1) * pageSize)
+        .all();
+
+      const total = countRow?.c ?? 0;
+      return Response.json({
+        tier,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
     }
 
     // Last-sync freshness indicator, shown in the shared dashboard header on
