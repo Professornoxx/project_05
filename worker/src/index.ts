@@ -724,11 +724,11 @@ export default {
 
     // Withdrawal Analysis (dashboard section 4): channel-wise processing
     // (create->review) and completion (review->complete) time buckets,
-    // "aging" charts for currently-open orders, and a 4-day completed
+    // "aging" charts for currently-open orders, and a 7-day completed
     // <4h vs >4h comparison. Scoped to a single date (create_time's day)
     // except the two "aging" charts, which are live snapshots of whatever
-    // is currently open (status 0/1) regardless of date, and the 4-day
-    // chart, which always covers the 4 days ending on the selected date.
+    // is currently open (status 0/1) regardless of date, and the 7-day
+    // chart, which always covers the 7 days ending on the selected date.
     // review_time/callback_time only exist for rows synced after that
     // column was added — older rows show as NULL and fall out of these
     // buckets, same caveat as channel on the section 3 tables.
@@ -832,7 +832,7 @@ export default {
                   SUM(CASE WHEN ${HOURS_BETWEEN("create_time", "callback_time")} >= 4 THEN 1 ELSE 0 END) as over4h
            FROM withdrawals
            WHERE CAST(status AS REAL) = 2 AND callback_time IS NOT NULL
-             AND date(create_time) BETWEEN date(?, '-3 days') AND date(?)
+             AND date(create_time) BETWEEN date(?, '-6 days') AND date(?)
            GROUP BY d ORDER BY d`
         )
         .bind(date, date)

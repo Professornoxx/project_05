@@ -118,7 +118,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 <div class="wl-half-grid">
   <div class="wl-panel accent-green">
     <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Completed Orders — &lt;4h vs &gt;4h (Last 4 Days)</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Completed Orders — &lt;4h vs &gt;4h (Last 7 Days)</div>
       <button class="wl-excel-btn" id="exportWl4dBtn">📥 Excel</button>
     </div>
     <div id="wl4dSummary"></div>
