@@ -765,13 +765,15 @@ export default {
         .all();
 
       // Live snapshot (not date-scoped): every currently-open order,
-      // however old, bucketed by how long it's been sitting.
+      // however old, bucketed by how long it's been sitting. Includes
+      // SUM(amount) per bucket so the chart can show a rupee figure
+      // alongside the count/percentage, matching the reference design.
       const processingAging = await env.daily_records_db
         .prepare(
           `SELECT CASE
              WHEN h < 6 THEN '3-6h' WHEN h < 12 THEN '6-12h' WHEN h < 24 THEN '12-24h' ELSE '>24h' END as bucket,
-             COUNT(*) as cnt
-           FROM (SELECT ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
+             COUNT(*) as cnt, COALESCE(SUM(amount),0) as amt
+           FROM (SELECT amount, ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
                  FROM withdrawals WHERE CAST(status AS REAL) = 1)
            WHERE h >= 3 GROUP BY bucket`
         )
@@ -779,10 +781,44 @@ export default {
 
       const inReviewAging = await env.daily_records_db
         .prepare(
-          `SELECT CASE WHEN h < 3 THEN '1-3h' WHEN h < 6 THEN '3-6h' ELSE '>6h' END as bucket, COUNT(*) as cnt
-           FROM (SELECT ${HOURS_BETWEEN("create_time", "datetime('now')")} as h
+          `SELECT CASE WHEN h < 3 THEN '1-3h' WHEN h < 6 THEN '3-6h' ELSE '>6h' END as bucket,
+                  COUNT(*) as cnt, COALESCE(SUM(amount),0) as amt
+           FROM (SELECT amount, ${HOURS_BETWEEN("create_time", "datetime('now')")} as h
                  FROM withdrawals WHERE CAST(status AS REAL) = 0)
            WHERE h >= 1 GROUP BY bucket`
+        )
+        .all();
+
+      // Withdrawal Processing — Amount Range: currently-processing orders
+      // (status=1), cross-tabbed by amount range and how long they've been
+      // processing (same aging window as processingAging above, just split
+      // per amount bracket instead of aggregated).
+      const AMOUNT_RANGE = `CASE
+        WHEN amount >= 200 AND amount <= 999 THEN '200-999'
+        WHEN amount >= 1000 AND amount <= 4999 THEN '1000-4999'
+        WHEN amount >= 5000 AND amount <= 9999 THEN '5000-9999'
+        WHEN amount >= 10000 AND amount <= 20000 THEN '10000-20000'
+        WHEN amount >= 20001 AND amount <= 50000 THEN '20001-50000'
+        ELSE 'Other' END`;
+      const processingByAmountRange = await env.daily_records_db
+        .prepare(
+          `SELECT range, bucket, COUNT(*) as cnt FROM (
+             SELECT ${AMOUNT_RANGE} as range,
+                    CASE WHEN h < 6 THEN '3-6H' WHEN h < 12 THEN '6-12H' WHEN h < 24 THEN '12-24H' ELSE '>24H' END as bucket
+             FROM (SELECT amount, ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
+                   FROM withdrawals WHERE CAST(status AS REAL) = 1)
+             WHERE h >= 3
+           ) GROUP BY range, bucket`
+        )
+        .all();
+
+      const rangeTotalsForProcessing = await env.daily_records_db
+        .prepare(
+          `SELECT range, COUNT(*) as total_orders, COALESCE(SUM(amount),0) as total_amount FROM (
+             SELECT amount, ${AMOUNT_RANGE} as range
+             FROM withdrawals WHERE CAST(status AS REAL) = 1
+               AND ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} >= 3
+           ) GROUP BY range`
         )
         .all();
 
@@ -806,6 +842,8 @@ export default {
         processingAging: processingAging.results,
         inReviewAging: inReviewAging.results,
         completedLast4Days: completedLast4Days.results,
+        processingByAmountRange: processingByAmountRange.results,
+        rangeTotalsForProcessing: rangeTotalsForProcessing.results,
       });
     }
 
