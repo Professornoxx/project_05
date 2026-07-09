@@ -836,7 +836,21 @@ export default {
            GROUP BY d ORDER BY d`
         )
         .bind(date, date)
-        .all();
+        .all<{ d: string; under4h: number; over4h: number }>();
+
+      // Always return all 7 day-slots, zero-filling any day with no rows —
+      // otherwise a day with genuinely no data (e.g. before callback_time
+      // capture started) silently disappears instead of showing as empty,
+      // making the chart look like it only covers 6 days.
+      const byDay: Record<string, { under4h: number; over4h: number }> = {};
+      completedLast4Days.results.forEach((r) => { byDay[r.d] = { under4h: r.under4h, over4h: r.over4h }; });
+      const sevenDays: { d: string; under4h: number; over4h: number }[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(date + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() - i);
+        const iso = d.toISOString().slice(0, 10);
+        sevenDays.push({ d: iso, ...(byDay[iso] ?? { under4h: 0, over4h: 0 }) });
+      }
 
       return Response.json({
         date,
@@ -844,7 +858,7 @@ export default {
         channelCompletionTime: channelCompletionTime.results,
         processingAging: processingAging.results,
         inReviewAging: inReviewAging.results,
-        completedLast4Days: completedLast4Days.results,
+        completedLast4Days: sevenDays,
         processingByAmountRange: processingByAmountRange.results,
         rangeTotalsForProcessing: rangeTotalsForProcessing.results,
       });
