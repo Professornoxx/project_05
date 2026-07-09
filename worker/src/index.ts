@@ -348,51 +348,88 @@ export default {
 
       const firstDeposits = await env.daily_records_db
         .prepare(
-          `SELECT user_id, MIN(region) as region, COUNT(*) as deposit_count_that_day
+          `SELECT user_id, MIN(region) as region
            FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
            GROUP BY user_id`
         )
         .bind(yesterdayStr)
-        .all<{ user_id: number; region: string | null; deposit_count_that_day: number }>();
+        .all<{ user_id: number; region: string | null }>();
 
       const userIds = firstDeposits.results.map((r) => r.user_id);
       const regionByUser: Record<number, string | null> = {};
       firstDeposits.results.forEach((r) => { regionByUser[r.user_id] = r.region; });
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      // Deposit/withdraw totals come from daily_records_db (the same source
+      // the first-deposit flag itself came from), NOT master_db.users —
+      // master_db only updates from periodic manual uploads, so brand-new
+      // users (who by definition just made their FIRST deposit) are very
+      // likely to be missing from it entirely. An inner join against
+      // master_db silently dropped every one of them (confirmed live: 7
+      // flagged first-deposit users, 0 matches in master_db.users).
+      type DepositAgg = { user_id: number; total_deposit: number; deposit_count: number };
+      type WithdrawAgg = { user_id: number; total_withdrawal: number };
+      let depositAggs: DepositAgg[] = [];
+      let withdrawAggs: WithdrawAgg[] = [];
+      for (let i = 0; i < userIds.length; i += 90) {
+        const chunk = userIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const dep = await env.daily_records_db
+          .prepare(
+            `SELECT user_id, COALESCE(SUM(amount),0) as total_deposit, COUNT(*) as deposit_count
+             FROM deposits WHERE status = 'COMPLETE' AND user_id IN (${placeholders}) GROUP BY user_id`
+          )
+          .bind(...chunk)
+          .all<DepositAgg>();
+        depositAggs = depositAggs.concat(dep.results);
 
-      type UserRow = {
-        user_id: number; total_deposit: number | null; deposit_count: number | null;
-        total_withdrawal: number | null; city: string | null; current_level: number;
-      };
-      let userRows: UserRow[] = [];
+        const wd = await env.daily_records_db
+          .prepare(
+            `SELECT user_id, COALESCE(SUM(amount),0) as total_withdrawal
+             FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IN (${placeholders}) GROUP BY user_id`
+          )
+          .bind(...chunk)
+          .all<WithdrawAgg>();
+        withdrawAggs = withdrawAggs.concat(wd.results);
+      }
+
+      // Optional: master_db.city, when the user does happen to already be
+      // there — falls back to the deposit export's own RegisterCity field.
+      const cityByUser: Record<number, string | null> = {};
       for (let i = 0; i < userIds.length; i += 90) {
         const chunk = userIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
-          .prepare(
-            `SELECT user_id, total_deposit, deposit_count, total_withdrawal, city, ${CURRENT_LEVEL} as current_level
-             FROM users WHERE user_id IN (${placeholders})`
-          )
+          .prepare(`SELECT user_id, city FROM users WHERE user_id IN (${placeholders})`)
           .bind(...chunk)
-          .all<UserRow>();
-        userRows = userRows.concat(res.results);
+          .all<{ user_id: number; city: string | null }>();
+        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; });
       }
 
-      const merged = userRows.map((u) => ({
-        user_id: u.user_id,
-        current_level: u.current_level,
-        deposit_count: u.deposit_count ?? 0,
-        total_deposit: u.total_deposit ?? 0,
-        total_withdrawal: u.total_withdrawal ?? 0,
-        profit_loss: (u.total_deposit ?? 0) - (u.total_withdrawal ?? 0),
-        region: u.city || regionByUser[u.user_id] || "Unknown",
-      })).sort((a, b) => b.total_deposit - a.total_deposit);
+      const depositByUser: Record<number, DepositAgg> = {};
+      depositAggs.forEach((r) => { depositByUser[r.user_id] = r; });
+      const withdrawByUser: Record<number, number> = {};
+      withdrawAggs.forEach((r) => { withdrawByUser[r.user_id] = r.total_withdrawal; });
+
+      const vipLevel = (totalDeposit: number): number => {
+        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
+        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
+        return 14;
+      };
+
+      const merged = userIds.map((uid) => {
+        const dep = depositByUser[uid];
+        const totalDeposit = dep?.total_deposit ?? 0;
+        const totalWithdrawal = withdrawByUser[uid] ?? 0;
+        return {
+          user_id: uid,
+          current_level: vipLevel(totalDeposit),
+          deposit_count: dep?.deposit_count ?? 0,
+          total_deposit: totalDeposit,
+          total_withdrawal: totalWithdrawal,
+          profit_loss: totalDeposit - totalWithdrawal,
+          region: cityByUser[uid] || regionByUser[uid] || "Unknown",
+        };
+      }).sort((a, b) => b.total_deposit - a.total_deposit);
 
       const total = merged.length;
       const start = (page - 1) * pageSize;
