@@ -11,6 +11,7 @@ import { WITHDRAW_ANALYSIS_CONTENT_HTML } from "./lib/withdrawAnalysisContent";
 import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisContent";
 import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
+import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -189,7 +190,7 @@ export default {
         dashboardRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
           : dashboardRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML
+          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -320,6 +321,88 @@ export default {
         total,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
         rows: rows.results,
+      });
+    }
+
+    // Action Center section 3: New Users & Bonuses — Yesterday First Deposit
+    // Users. Flagged by the source system's own first-deposit marker
+    // (is_first_deposit, captured on deposits from the export field
+    // "是否是首充，0不是首充，1是首充") rather than us inferring "first" from
+    // history, since a user's deposit history here only goes back as far as
+    // SYNC_WINDOW_DAYS anyway. deposits (daily_records_db) and users
+    // (master_db) are separate D1 databases with no cross-DB JOIN, so this
+    // does two queries and merges in memory — the result set here is small
+    // (bounded by however many first-time depositors happened in one day),
+    // so paginating in memory after merging is simpler and safer than
+    // trying to paginate correctly across two independently-sorted sources.
+    if (url.pathname === "/api/dashboard/action-center/yesterday-first-deposits" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const yesterday = new Date(anchorDate + "T00:00:00Z");
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+      const firstDeposits = await env.daily_records_db
+        .prepare(
+          `SELECT user_id, MIN(region) as region, COUNT(*) as deposit_count_that_day
+           FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
+           GROUP BY user_id`
+        )
+        .bind(yesterdayStr)
+        .all<{ user_id: number; region: string | null; deposit_count_that_day: number }>();
+
+      const userIds = firstDeposits.results.map((r) => r.user_id);
+      const regionByUser: Record<number, string | null> = {};
+      firstDeposits.results.forEach((r) => { regionByUser[r.user_id] = r.region; });
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      type UserRow = {
+        user_id: number; total_deposit: number | null; deposit_count: number | null;
+        total_withdrawal: number | null; city: string | null; current_level: number;
+      };
+      let userRows: UserRow[] = [];
+      for (let i = 0; i < userIds.length; i += 90) {
+        const chunk = userIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const res = await env.master_db
+          .prepare(
+            `SELECT user_id, total_deposit, deposit_count, total_withdrawal, city, ${CURRENT_LEVEL} as current_level
+             FROM users WHERE user_id IN (${placeholders})`
+          )
+          .bind(...chunk)
+          .all<UserRow>();
+        userRows = userRows.concat(res.results);
+      }
+
+      const merged = userRows.map((u) => ({
+        user_id: u.user_id,
+        current_level: u.current_level,
+        deposit_count: u.deposit_count ?? 0,
+        total_deposit: u.total_deposit ?? 0,
+        total_withdrawal: u.total_withdrawal ?? 0,
+        profit_loss: (u.total_deposit ?? 0) - (u.total_withdrawal ?? 0),
+        region: u.city || regionByUser[u.user_id] || "Unknown",
+      })).sort((a, b) => b.total_deposit - a.total_deposit);
+
+      const total = merged.length;
+      const start = (page - 1) * pageSize;
+      return Response.json({
+        date: yesterdayStr,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: merged.slice(start, start + pageSize),
       });
     }
 

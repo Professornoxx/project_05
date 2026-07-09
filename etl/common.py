@@ -44,6 +44,12 @@ RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "upda
 # aging panels.
 REVIEW_TIME_FIELD_CANDIDATES = ["reviewTime", "review_time"]
 CALLBACK_TIME_FIELD_CANDIDATES = ["callbackTime", "callback_time"]
+# deposit-only: "是否是首充，0不是首充，1是首充" (is-first-deposit, 0=no/1=yes) and
+# "RegisterCity" (the user's registered city) — both confirmed present in
+# real deposit export headers, used by Action Center's "New Users & Bonuses"
+# section to flag genuinely-new depositors and show where they're from.
+FIRST_DEPOSIT_FIELD_CANDIDATES = ["是否是首充，0不是首充，1是首充", "is_first_deposit"]
+REGION_FIELD_CANDIDATES = ["RegisterCity", "region"]
 
 
 def _pick(row: dict, candidates: list[str]):
@@ -94,6 +100,8 @@ def extract_common_fields(row: dict) -> dict:
         "result_time": _coerce(_pick(row, RESULT_TIME_FIELD_CANDIDATES)),
         "review_time": _coerce(_pick(row, REVIEW_TIME_FIELD_CANDIDATES)),
         "callback_time": _coerce(_pick(row, CALLBACK_TIME_FIELD_CANDIDATES)),
+        "is_first_deposit": _coerce(_pick(row, FIRST_DEPOSIT_FIELD_CANDIDATES)),
+        "region": _coerce(_pick(row, REGION_FIELD_CANDIDATES)),
     }
 
 
