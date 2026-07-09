@@ -183,6 +183,7 @@ function anRenderDayTabs() {
       anSelectedDate = btn.dataset.date;
       anRenderDayTabs();
       loadAnalytics(anSelectedDate);
+      if (typeof window.loadReactivation === 'function') window.loadReactivation(anSelectedDate);
     };
   });
 }

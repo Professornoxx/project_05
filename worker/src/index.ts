@@ -14,6 +14,7 @@ import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
 import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
 import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
 import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
+import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -194,7 +195,7 @@ export default {
           : dashboardRoute.key === "action-center"
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : dashboardRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -929,6 +930,112 @@ export default {
         .sort((a, b) => a.level - b.level);
 
       return Response.json({ date, topRegions, byVipLevel });
+    }
+
+    // Analytics page section 2: Reactivation. "Reactivated" = a user
+    // currently counted inactive per master_db (same definition as Action
+    // Center's Inactive Users: current VIP bracket + inactive_days window,
+    // computed from last_active_time) who has ALSO made a completed
+    // deposit recently. This works specifically because master_db.users
+    // only updates from periodic manual uploads (established earlier,
+    // section 3 of Action Center) — last_active_time does NOT get bumped
+    // by today's deposit, so a just-reactivated user still shows up as
+    // "inactive" here, letting us intersect the two sets meaningfully
+    // instead of everyone always looking freshly active. The 3-day
+    // conversion rate uses the CURRENT inactive cohort size as its
+    // denominator (an approximation — we don't have historical cohort
+    // snapshots). 7-day is not computable at all: deposits data only
+    // covers a rolling SYNC_WINDOW_DAYS=5-day window, so a 7-day lookback
+    // would silently undercount — shown as "not enough history yet"
+    // instead of a misleading number.
+    if (url.pathname === "/api/dashboard/analytics/reactivation" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const threeDaysAgo = new Date(anchorDate + "T00:00:00Z");
+      threeDaysAgo.setUTCDate(threeDaysAgo.getUTCDate() - 2);
+      const threeDaysAgoStr = threeDaysAgo.toISOString().slice(0, 10);
+
+      const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 10, 180] : [5, 14, 15, 240];
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      const cohortCountRow = await env.master_db
+        .prepare(
+          `SELECT COUNT(*) as c FROM (
+             SELECT ${CURRENT_LEVEL} as current_level,
+                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+             FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+           ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`
+        )
+        .bind(minLevel, maxLevel, minDays, maxDays)
+        .first<{ c: number }>();
+      const cohortSize = cohortCountRow?.c ?? 0;
+
+      // Small sets (today's / last-3-days' depositors), not the whole
+      // multi-thousand inactive cohort — cheap to look up individually.
+      const todayDeposits = await env.daily_records_db
+        .prepare(`SELECT user_id, SUM(amount) as day_deposit FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
+        .bind(anchorDate)
+        .all<{ user_id: number; day_deposit: number }>();
+      const threeDayDeposits = await env.daily_records_db
+        .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
+        .bind(threeDaysAgoStr, anchorDate)
+        .all<{ user_id: number }>();
+
+      const todayDepositByUser: Record<number, number> = {};
+      todayDeposits.results.forEach((r) => { todayDepositByUser[r.user_id] = r.day_deposit; });
+      const threeDaySet = new Set(threeDayDeposits.results.map((r) => r.user_id));
+      const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...threeDaySet]));
+
+      type MasterRow = { user_id: number; current_level: number; inactive_days: number };
+      let masterRows: MasterRow[] = [];
+      for (let i = 0; i < candidateIds.length; i += 90) {
+        const chunk = candidateIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const res = await env.master_db
+          .prepare(
+            `SELECT user_id, ${CURRENT_LEVEL} as current_level,
+                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+             FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL AND last_active_time IS NOT NULL`
+          )
+          .bind(...chunk)
+          .all<MasterRow>();
+        masterRows = masterRows.concat(res.results);
+      }
+
+      const cohortMembers = masterRows.filter(
+        (r) => r.current_level >= minLevel && r.current_level <= maxLevel && r.inactive_days >= minDays && r.inactive_days <= maxDays
+      );
+      const reactivatedTodayRows = cohortMembers
+        .filter((r) => todayDepositByUser[r.user_id] !== undefined)
+        .map((r) => ({ user_id: r.user_id, current_level: r.current_level, inactive_days: r.inactive_days, day_deposit: todayDepositByUser[r.user_id] }))
+        .sort((a, b) => b.inactive_days - a.inactive_days);
+      const reactivated3DayCount = cohortMembers.filter((r) => threeDaySet.has(r.user_id)).length;
+
+      const total = reactivatedTodayRows.length;
+      const start = (page - 1) * pageSize;
+      return Response.json({
+        date: anchorDate,
+        tier,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: reactivatedTodayRows.slice(start, start + pageSize),
+        cohortSize,
+        reactivatedTodayCount: total,
+        reactivated3DayCount,
+      });
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
