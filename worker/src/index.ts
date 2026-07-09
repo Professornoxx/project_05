@@ -1079,7 +1079,7 @@ export default {
       const cohortCountRow = await env.master_db
         .prepare(
           `SELECT COUNT(*) as c FROM (
-             SELECT ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+             SELECT total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
              FROM users WHERE total_deposit IS NOT NULL
            ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
              AND (next_level_min - total_deposit) BETWEEN 1 AND ?`
