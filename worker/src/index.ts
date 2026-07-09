@@ -193,6 +193,37 @@ export default {
       );
     }
 
+    // Last-sync freshness indicator, shown in the shared dashboard header on
+    // every page. Each section's own "Updated HH:MM:SS" text is just the
+    // browser's render time, not actual data freshness — it kept reading as
+    // current during an ~8hr token-expiry outage where every sync failed,
+    // giving false confidence the data was live. This surfaces the real
+    // last SUCCESSFUL sync_runs timestamp per source instead.
+    if (url.pathname === "/api/dashboard/last-sync" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `SELECT source, MAX(finished_at) as last_success
+           FROM sync_runs WHERE status = 'success' GROUP BY source`
+        )
+        .all<{ source: string; last_success: string }>();
+
+      const lastFailure = await env.daily_records_db
+        .prepare(
+          `SELECT source, started_at, error_message FROM sync_runs
+           WHERE status = 'failed' ORDER BY started_at DESC LIMIT 1`
+        )
+        .first<{ source: string; started_at: string; error_message: string }>();
+
+      return Response.json({
+        bySource: rows.results,
+        recentFailure: lastFailure ?? null,
+        serverNow: new Date().toISOString(),
+      });
+    }
+
     // Home page (section 1) stats — daily KPI overview for a given date
     // (defaults to today). Deposit "complete" and withdraw "in-review +
     // processing + complete" definitions confirmed against real status
