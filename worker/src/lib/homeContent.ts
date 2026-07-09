@@ -121,13 +121,14 @@ async function loadStats(date) {
   }
 }
 
-// Sections 2 (Deposit Analysis) and 3 (Withdraw Analysis) register their
-// loaders here so the day picker drives all three sections at once instead
-// of only section 1 — they each default to today server-side otherwise.
+// Sections 2 (Deposit Analysis), 3 (Deposit Hourly Analysis), and 4
+// (Withdrawal Analysis) register their loaders here so the day picker
+// drives all sections at once instead of only section 1 — they each
+// default to today server-side otherwise.
 function reloadAllSections(date) {
   loadStats(date);
   if (typeof window.loadDepositAnalysis === 'function') window.loadDepositAnalysis(date);
-  if (typeof window.loadWithdrawAnalysis === 'function') window.loadWithdrawAnalysis(date);
+  if (typeof window.loadDepositHourlyAnalysis === 'function') window.loadDepositHourlyAnalysis(date);
   if (typeof window.loadWithdrawalAnalysis === 'function') window.loadWithdrawalAnalysis(date);
 }
 

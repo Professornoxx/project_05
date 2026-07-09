@@ -7,7 +7,7 @@ import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
-import { WITHDRAW_ANALYSIS_CONTENT_HTML } from "./lib/withdrawAnalysisContent";
+import { DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML } from "./lib/depositHourlyAnalysisContent";
 import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisContent";
 import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
@@ -189,7 +189,7 @@ export default {
       }
       const content =
         dashboardRoute.key === "home"
-          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + WITHDRAW_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
           : dashboardRoute.key === "action-center"
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
@@ -649,15 +649,12 @@ export default {
       });
     }
 
-    // Withdraw Analysis (dashboard section 3): hourly success-rate tables
-    // by amount range and by channel. "Success" = status 2 (Completed) only
-    // — same strict definition as Deposit Analysis's status = 'COMPLETE'.
-    // NOTE this deliberately differs from the Home KPI card's "Total
-    // Withdraw" definition (status 0/1/2, in-review+processing+complete),
-    // which measures claimed+pending+completed volume, not completion rate
-    // — using that lenient definition here made every cell read ~100%
-    // since few withdrawals are ever explicitly rejected/failed.
-    if (url.pathname === "/api/dashboard/withdraw-analysis" && request.method === "GET") {
+    // Deposit hourly analysis (dashboard section 3): hourly success-rate
+    // tables by amount range and by channel — same layout/format that used
+    // to show withdrawals here, now shows deposits instead per request.
+    // "Success" = status = 'COMPLETE', same strict definition as Deposit
+    // Analysis section 2.
+    if (url.pathname === "/api/dashboard/deposit-hourly-analysis" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
@@ -674,13 +671,13 @@ export default {
         WHEN amount >= 10000 AND amount <= 19999 THEN '10000-19999'
         WHEN amount >= 20000 AND amount <= 50000 THEN '20000-50000'
         ELSE 'Other' END`;
-      const IS_SUCCESS = `CAST(status AS REAL) = 2`;
+      const IS_SUCCESS = `status = 'COMPLETE'`;
 
       const byRangeHour = await env.daily_records_db
         .prepare(
           `SELECT ${RANGE_CASE} as range, CAST(strftime('%H', create_time) AS INTEGER) as hour,
                   COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM withdrawals WHERE date(create_time) = ? GROUP BY range, hour`
+           FROM deposits WHERE date(create_time) = ? GROUP BY range, hour`
         )
         .bind(date)
         .all();
@@ -688,7 +685,7 @@ export default {
       const rangeTotals = await env.daily_records_db
         .prepare(
           `SELECT ${RANGE_CASE} as range, COUNT(*) as total_orders
-           FROM withdrawals WHERE date(create_time) = ? GROUP BY range`
+           FROM deposits WHERE date(create_time) = ? GROUP BY range`
         )
         .bind(date)
         .all();
@@ -697,7 +694,7 @@ export default {
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel, CAST(strftime('%H', create_time) AS INTEGER) as hour,
                   COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM withdrawals WHERE date(create_time) = ? GROUP BY channel, hour`
+           FROM deposits WHERE date(create_time) = ? GROUP BY channel, hour`
         )
         .bind(date)
         .all();
@@ -705,7 +702,7 @@ export default {
       const channelTotals = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders
-           FROM withdrawals WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
+           FROM deposits WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
         )
         .bind(date)
         .all();
