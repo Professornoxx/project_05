@@ -13,6 +13,7 @@ import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
 import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
 import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
+import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -192,6 +193,8 @@ export default {
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
           : dashboardRoute.key === "action-center"
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          : dashboardRoute.key === "analytics"
+          ? ANALYTICS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -842,6 +845,90 @@ export default {
         processingByAmountRange: processingByAmountRange.results,
         rangeTotalsForProcessing: rangeTotalsForProcessing.results,
       });
+    }
+
+    // Analytics page section 1: Region & VIP Deposit Analytics — top 10
+    // regions by that day's completed deposit volume, and that same day's
+    // deposit volume broken down by each depositing user's (lifetime) VIP
+    // level. deposits (daily_records_db) and users (master_db) are separate
+    // D1 databases with no cross-DB JOIN, so this fetches the day's
+    // per-user deposit totals, then batches a lookup of city + lifetime
+    // total_deposit from master_db and merges in memory — same pattern as
+    // Action Center section 3. City comes from master_db.users (99.8%
+    // populated); deposits.region is a newer, sparser fallback for rows
+    // synced after that column existed.
+    if (url.pathname === "/api/dashboard/analytics/region-vip-deposit" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const date = url.searchParams.get("date") || todayIST();
+
+      const dayDeposits = await env.daily_records_db
+        .prepare(
+          `SELECT user_id, SUM(amount) as day_deposit, MIN(region) as region
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+           GROUP BY user_id`
+        )
+        .bind(date)
+        .all<{ user_id: number; day_deposit: number; region: string | null }>();
+
+      const userIds = dayDeposits.results.map((r) => r.user_id);
+      const dayDepositByUser: Record<number, number> = {};
+      const fallbackRegionByUser: Record<number, string | null> = {};
+      dayDeposits.results.forEach((r) => {
+        dayDepositByUser[r.user_id] = r.day_deposit;
+        fallbackRegionByUser[r.user_id] = r.region;
+      });
+
+      type MasterRow = { user_id: number; city: string | null; total_deposit: number | null };
+      const chunks: number[][] = [];
+      for (let i = 0; i < userIds.length; i += 90) chunks.push(userIds.slice(i, i + 90));
+      const chunkResults = await Promise.all(
+        chunks.map((chunk) => {
+          const placeholders = chunk.map(() => "?").join(",");
+          return env.master_db
+            .prepare(`SELECT user_id, city, total_deposit FROM users WHERE user_id IN (${placeholders})`)
+            .bind(...chunk)
+            .all<MasterRow>();
+        })
+      );
+      const masterByUser: Record<number, MasterRow> = {};
+      chunkResults.forEach((res) => res.results.forEach((r) => { masterByUser[r.user_id] = r; }));
+
+      const vipLevel = (totalDeposit: number): number => {
+        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
+        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
+        return 14;
+      };
+
+      const byRegion: Record<string, { total: number; users: Set<number> }> = {};
+      const byVip: Record<number, { total: number; users: Set<number> }> = {};
+
+      userIds.forEach((uid) => {
+        const dayAmt = dayDepositByUser[uid] ?? 0;
+        const master = masterByUser[uid];
+        const region = (master && master.city) || fallbackRegionByUser[uid] || "Unknown";
+        const level = vipLevel(master?.total_deposit ?? 0);
+
+        if (!byRegion[region]) byRegion[region] = { total: 0, users: new Set() };
+        byRegion[region].total += dayAmt;
+        byRegion[region].users.add(uid);
+
+        if (!byVip[level]) byVip[level] = { total: 0, users: new Set() };
+        byVip[level].total += dayAmt;
+        byVip[level].users.add(uid);
+      });
+
+      const topRegions = Object.entries(byRegion)
+        .map(([region, v]) => ({ region, total: v.total, users: v.users.size }))
+        .sort((a, b) => b.total - a.total)
+        .slice(0, 10);
+
+      const byVipLevel = Object.entries(byVip)
+        .map(([level, v]) => ({ level: Number(level), total: v.total, users: v.users.size }))
+        .sort((a, b) => a.level - b.level);
+
+      return Response.json({ date, topRegions, byVipLevel });
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
