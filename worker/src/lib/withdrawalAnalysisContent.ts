@@ -9,53 +9,65 @@
 // silently fall out of the processing/completion tables.
 export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 <style>
-  .wl-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 14px; }
-  .wl-title { font-weight: 700; font-size: 15px; letter-spacing: 0.03em; text-transform: uppercase; }
-  .wl-tag { background: #fee2e2; color: #b91c1c; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 4px 10px; border-radius: 6px; }
-  .wl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+  .wl-header { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 16px; }
+  .wl-title { font-weight: 700; font-size: 15px; letter-spacing: 0.04em; text-transform: uppercase; color: #1f2430; }
+  .wl-tag { background: #fee2e2; color: #b91c1c; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 5px 12px; border-radius: 20px; }
+  .wl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; }
   @media (max-width: 900px) { .wl-grid { grid-template-columns: 1fr; } }
-  .wl-panel { background: #fff; border-left: 4px solid #e24b4a; border-radius: 0 10px 10px 0; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .wl-panel { background: #fff; border-left: 4px solid #e24b4a; border-radius: 0 14px 14px 0; padding: 20px 22px; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 2px 8px rgba(16,24,40,0.06); transition: box-shadow 0.15s ease; }
+  .wl-panel:hover { box-shadow: 0 2px 4px rgba(16,24,40,0.05), 0 6px 16px rgba(16,24,40,0.08); }
   .wl-panel.accent-green { border-left-color: #15803d; }
   .wl-panel.accent-blue { border-left-color: #0c447c; }
   .wl-panel.accent-amber { border-left-color: #b45309; }
-  .wl-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-  .wl-panel-title { font-weight: 700; font-size: 14px; }
-  .wl-excel-btn { background: #16a34a; color: #fff; border: none; padding: 7px 14px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-  table.wl-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  table.wl-table th { text-align: center; padding: 6px 8px; background: #fafafa; color: #666; font-size: 10px; text-transform: uppercase; }
+  .wl-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .wl-panel-title { font-weight: 700; font-size: 13.5px; color: #1f2430; display: flex; align-items: center; gap: 10px; }
+  .wl-icon-badge { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; font-size: 15px; background: #fee2e2; flex-shrink: 0; }
+  .wl-panel.accent-green .wl-icon-badge { background: #dcfce7; }
+  .wl-panel.accent-blue .wl-icon-badge { background: #dbeafe; }
+  .wl-panel.accent-amber .wl-icon-badge { background: #fef3c7; }
+  .wl-excel-btn { background: #16a34a; color: #fff; border: none; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background 0.15s ease, transform 0.1s ease; }
+  .wl-excel-btn:hover { background: #15803d; }
+  .wl-excel-btn:active { transform: scale(0.97); }
+  table.wl-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.wl-table th { text-align: center; padding: 9px 8px; background: #f8f9fb; color: #6b7280; font-size: 10px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
   table.wl-table th:first-child, table.wl-table td:first-child { text-align: left; }
-  table.wl-table td { padding: 6px 8px; text-align: center; border-top: 1px solid #f0f0f0; }
-  table.wl-table td.wl-total { font-weight: 700; text-align: right; }
+  table.wl-table th:first-child { border-radius: 8px 0 0 8px; }
+  table.wl-table th:last-child { border-radius: 0 8px 8px 0; }
+  table.wl-table td { padding: 9px 8px; text-align: center; border-top: 1px solid #f1f2f5; color: #374151; }
+  table.wl-table tr:hover td { background: #fafbfc; }
+  table.wl-table td.wl-total { font-weight: 700; text-align: right; color: #1f2430; }
 
-  .wl-chart { position: relative; height: 260px; margin-top: 6px; padding-left: 34px; }
-  .wl-gridline { position: absolute; left: 34px; right: 0; border-top: 1px solid #eee; font-size: 10px; color: #999; }
-  .wl-gridline span { position: absolute; left: -34px; top: -6px; width: 28px; text-align: right; }
-  .wl-bars { position: absolute; left: 34px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; gap: 16px; }
+  .wl-chart { position: relative; height: 260px; margin-top: 8px; padding-left: 36px; }
+  .wl-gridline { position: absolute; left: 36px; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
+  .wl-gridline span { position: absolute; left: -36px; top: -6px; width: 30px; text-align: right; }
+  .wl-bars { position: absolute; left: 36px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; gap: 16px; }
   .wl-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-  .wl-bar { width: 60%; min-height: 2px; border-radius: 3px 3px 0 0; position: relative; }
-  .wl-bar-value { font-size: 12px; font-weight: 700; margin-bottom: 2px; text-align: center; }
-  .wl-bar-sub { font-size: 10px; color: #555; margin-bottom: 4px; text-align: center; line-height: 1.3; }
-  .wl-bar-label { font-size: 11px; color: #888; margin-top: 8px; position: absolute; bottom: -20px; }
+  .wl-bar { width: 56%; min-height: 2px; border-radius: 5px 5px 0 0; position: relative; transition: opacity 0.15s ease; }
+  .wl-bar-col:hover .wl-bar { opacity: 0.85; }
+  .wl-bar-value { font-size: 12px; font-weight: 700; margin-bottom: 2px; text-align: center; color: #1f2430; }
+  .wl-bar-sub { font-size: 10px; color: #6b7280; margin-bottom: 4px; text-align: center; line-height: 1.35; }
+  .wl-bar-label { font-size: 11px; color: #9ca3af; font-weight: 500; margin-top: 8px; position: absolute; bottom: -20px; }
 
-  .wl-4day-legend { display: flex; gap: 16px; margin-bottom: 4px; font-size: 12px; }
-  .wl-4day-legend span { display: inline-flex; align-items: center; gap: 6px; }
-  .wl-4day-legend i { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
-  .wl-4day-chart { position: relative; height: 280px; margin-top: 6px; padding-left: 44px; }
-  .wl-4day-gridline { position: absolute; left: 44px; right: 0; border-top: 1px solid #eee; font-size: 10px; color: #999; }
-  .wl-4day-gridline span { position: absolute; left: -44px; top: -6px; width: 38px; text-align: right; }
-  .wl-4day-groups { position: absolute; left: 44px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; gap: 24px; overflow-x: auto; }
+  .wl-4day-legend { display: flex; gap: 18px; margin-bottom: 6px; font-size: 12px; color: #4b5563; }
+  .wl-4day-legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .wl-4day-legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .wl-4day-chart { position: relative; height: 280px; margin-top: 8px; padding-left: 46px; }
+  .wl-4day-gridline { position: absolute; left: 46px; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
+  .wl-4day-gridline span { position: absolute; left: -46px; top: -6px; width: 40px; text-align: right; }
+  .wl-4day-groups { position: absolute; left: 46px; right: 0; bottom: 0; top: 0; display: flex; align-items: flex-end; gap: 26px; overflow-x: auto; }
   .wl-4day-group { display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; min-width: 60px; }
   .wl-4day-bars { display: flex; align-items: flex-end; gap: 6px; height: 100%; }
   .wl-4day-bar-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
-  .wl-4day-bar { width: 34px; min-height: 2px; border-radius: 3px 3px 0 0; }
-  .wl-4day-bar-value { font-size: 11px; font-weight: 700; text-align: center; }
-  .wl-4day-bar-pct { font-size: 9px; color: #555; text-align: center; }
-  .wl-4day-date { font-size: 11px; color: #888; margin-top: 8px; }
+  .wl-4day-bar { width: 32px; min-height: 2px; border-radius: 5px 5px 0 0; }
+  .wl-4day-bar-value { font-size: 11px; font-weight: 700; text-align: center; color: #1f2430; }
+  .wl-4day-bar-pct { font-size: 9px; color: #6b7280; text-align: center; }
+  .wl-4day-date { font-size: 11px; color: #9ca3af; font-weight: 500; margin-top: 8px; }
 
-  .wl-half-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+  .wl-half-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; }
   @media (max-width: 900px) { .wl-half-grid { grid-template-columns: 1fr; } }
 
-  #wlStatus, #wl4dSummary { font-size: 13px; color: #888; margin-top: 4px; }
+  #wlStatus, #wl4dSummary { font-size: 12.5px; color: #9ca3af; margin-top: 6px; }
+  #wl4dSummary { font-weight: 500; color: #6b7280; }
 </style>
 
 <div class="wl-header">
@@ -66,7 +78,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 <div class="wl-grid">
   <div class="wl-panel">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">⏳ Channel-wise Processing Time (create → review) — status 1</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Channel-wise Processing Time (create → review) — status 1</div>
       <button class="wl-excel-btn" id="exportWlProcTimeBtn">📥 Download Orders (Excel)</button>
     </div>
     <table class="wl-table" id="wlProcTimeTable">
@@ -77,7 +89,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel accent-green">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">✅ Channel-wise Completion Time (review → complete) — status 2</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Channel-wise Completion Time (review → complete) — status 2</div>
       <button class="wl-excel-btn" id="exportWlCompTimeBtn">📥 Excel</button>
     </div>
     <table class="wl-table" id="wlCompTimeTable">
@@ -88,7 +100,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">⏳ Processing Orders — Aging</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Processing Orders — Aging</div>
       <button class="wl-excel-btn" id="exportWlProcAgingBtn">📥 Excel</button>
     </div>
     <div class="wl-chart" id="wlProcAgingChart"></div>
@@ -96,7 +108,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel accent-blue">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">🔍 In-Review Orders — Aging</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">🔍</span>In-Review Orders — Aging</div>
       <button class="wl-excel-btn" id="exportWlReviewAgingBtn">📥 Excel</button>
     </div>
     <div class="wl-chart" id="wlReviewAgingChart"></div>
@@ -106,7 +118,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 <div class="wl-half-grid">
   <div class="wl-panel accent-green">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">✅ Completed Orders — &lt;4h vs &gt;4h (Last 4 Days)</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Completed Orders — &lt;4h vs &gt;4h (Last 4 Days)</div>
       <button class="wl-excel-btn" id="exportWl4dBtn">📥 Excel</button>
     </div>
     <div id="wl4dSummary"></div>
@@ -116,7 +128,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel accent-amber">
     <div class="wl-panel-head">
-      <div class="wl-panel-title">💰 Withdrawal Processing — Amount Range</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">💰</span>Withdrawal Processing — Amount Range</div>
       <button class="wl-excel-btn" id="exportWlRangeBtn">📥 Excel</button>
     </div>
     <table class="wl-table" id="wlRangeTable">
@@ -164,8 +176,12 @@ function wlNiceMax(v) {
   return niceN * pow;
 }
 
-function wlRenderGridlines(container, maxVal, steps) {
+function wlRenderGridlines(container, maxVal, desiredSteps) {
   const niceMax = wlNiceMax(maxVal);
+  // When niceMax is a small integer (e.g. 1 or 2), dividing into
+  // desiredSteps ticks rounds several of them to the same integer —
+  // cap steps at niceMax itself so every tick label is distinct.
+  const steps = Number.isInteger(niceMax) && niceMax < desiredSteps ? Math.max(niceMax, 1) : desiredSteps;
   let html = '';
   for (let i = 0; i <= steps; i++) {
     const val = Math.round((niceMax / steps) * i);
