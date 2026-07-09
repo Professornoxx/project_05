@@ -15,6 +15,7 @@ import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
 import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
 import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
+import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -195,7 +196,7 @@ export default {
           : dashboardRoute.key === "action-center"
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : dashboardRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -1035,6 +1036,136 @@ export default {
         cohortSize,
         reactivatedTodayCount: total,
         reactivated3DayCount,
+      });
+    }
+
+    // Analytics page section 3: VIP Level Upgrade. Same shape as
+    // Reactivation (see that endpoint's comment): the cohort is the
+    // "near-upgrade" set — same definition as Action Center's VIP Near
+    // Upgrade (current VIP bracket + gap-to-next-bracket window, computed
+    // from master_db.total_deposit, which lags behind today's activity).
+    // "Upgraded today" = a cohort member whose TODAY's deposit(s), added
+    // on top of that lagging total_deposit baseline, push them past the
+    // next bracket's floor. total_deposit in master_db is treated as the
+    // pre-today baseline specifically because it doesn't reflect today's
+    // deposits yet — same staleness fact that made Reactivation work.
+    if (url.pathname === "/api/dashboard/analytics/vip-upgrade" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const threeDaysAgo = new Date(anchorDate + "T00:00:00Z");
+      threeDaysAgo.setUTCDate(threeDaysAgo.getUTCDate() - 2);
+      const threeDaysAgoStr = threeDaysAgo.toISOString().slice(0, 10);
+
+      const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const NEXT_LEVEL_MIN = `CASE
+        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
+        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
+        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
+        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
+        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+
+      const cohortCountRow = await env.master_db
+        .prepare(
+          `SELECT COUNT(*) as c FROM (
+             SELECT ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+             FROM users WHERE total_deposit IS NOT NULL
+           ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+             AND (next_level_min - total_deposit) BETWEEN 1 AND ?`
+        )
+        .bind(minLevel, maxLevel, maxGap)
+        .first<{ c: number }>();
+      const cohortSize = cohortCountRow?.c ?? 0;
+
+      const todayDeposits = await env.daily_records_db
+        .prepare(`SELECT user_id, SUM(amount) as day_deposit FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
+        .bind(anchorDate)
+        .all<{ user_id: number; day_deposit: number }>();
+      const threeDayDeposits = await env.daily_records_db
+        .prepare(`SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
+        .bind(threeDaysAgoStr, anchorDate)
+        .all<{ user_id: number; amt: number }>();
+
+      const todayDepositByUser: Record<number, number> = {};
+      todayDeposits.results.forEach((r) => { todayDepositByUser[r.user_id] = r.day_deposit; });
+      const threeDayDepositByUser: Record<number, number> = {};
+      threeDayDeposits.results.forEach((r) => { threeDayDepositByUser[r.user_id] = r.amt; });
+      const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...Object.keys(threeDayDepositByUser).map(Number)]));
+
+      type MasterRow = { user_id: number; total_deposit: number; current_level: number; next_level_min: number | null };
+      let masterRows: MasterRow[] = [];
+      for (let i = 0; i < candidateIds.length; i += 90) {
+        const chunk = candidateIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const res = await env.master_db
+          .prepare(
+            `SELECT user_id, total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+             FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
+          )
+          .bind(...chunk)
+          .all<MasterRow>();
+        masterRows = masterRows.concat(res.results);
+      }
+
+      const vipLevel = (totalDeposit: number): number => {
+        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
+        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
+        return 14;
+      };
+
+      const cohortMembers = masterRows.filter(
+        (r) => r.next_level_min !== null && r.current_level >= minLevel && r.current_level <= maxLevel &&
+          (r.next_level_min - r.total_deposit) >= 1 && (r.next_level_min - r.total_deposit) <= maxGap
+      );
+
+      const upgradedTodayRows = cohortMembers
+        .filter((r) => todayDepositByUser[r.user_id] !== undefined)
+        .map((r) => {
+          const dayDeposit = todayDepositByUser[r.user_id];
+          const totalAfter = r.total_deposit + dayDeposit;
+          const vipAfter = vipLevel(totalAfter);
+          return { r, dayDeposit, totalAfter, vipAfter };
+        })
+        .filter(({ vipAfter, r }) => vipAfter > r.current_level)
+        .map(({ r, dayDeposit, totalAfter, vipAfter }) => ({
+          user_id: r.user_id,
+          vip_before: r.current_level,
+          vip_after: vipAfter,
+          day_deposit: dayDeposit,
+          amount_over_minimum: totalAfter - (r.next_level_min as number),
+        }))
+        .sort((a, b) => b.day_deposit - a.day_deposit);
+
+      const upgraded3DayCount = cohortMembers.filter((r) => {
+        const amt = threeDayDepositByUser[r.user_id];
+        if (amt === undefined) return false;
+        return vipLevel(r.total_deposit + amt) > r.current_level;
+      }).length;
+
+      const total = upgradedTodayRows.length;
+      const start = (page - 1) * pageSize;
+      return Response.json({
+        date: anchorDate,
+        tier,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: upgradedTodayRows.slice(start, start + pageSize),
+        cohortSize,
+        upgradedTodayCount: total,
+        upgraded3DayCount,
       });
     }
 

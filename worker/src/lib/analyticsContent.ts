@@ -184,6 +184,7 @@ function anRenderDayTabs() {
       anRenderDayTabs();
       loadAnalytics(anSelectedDate);
       if (typeof window.loadReactivation === 'function') window.loadReactivation(anSelectedDate);
+      if (typeof window.loadVipUpgrade === 'function') window.loadVipUpgrade(anSelectedDate);
     };
   });
 }
