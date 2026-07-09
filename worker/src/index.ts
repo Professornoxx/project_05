@@ -16,6 +16,7 @@ import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
 import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
+import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -196,7 +197,7 @@ export default {
           : dashboardRoute.key === "action-center"
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : dashboardRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -1166,6 +1167,165 @@ export default {
         cohortSize,
         upgradedTodayCount: total,
         upgraded3DayCount,
+      });
+    }
+
+    // Analytics page section 4 (panel 1): First-Deposit Day-1 Retention.
+    // Cohort = yesterday's first-deposit users (same is_first_deposit flag
+    // and date-anchoring as Action Center's Yesterday First Deposit Users).
+    // "Deposited again" = any COMPLETE deposit from that same cohort today.
+    if (url.pathname === "/api/dashboard/analytics/day1-retention" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const yesterday = new Date(anchorDate + "T00:00:00Z");
+      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+      const firstDeposits = await env.daily_records_db
+        .prepare(
+          `SELECT user_id, MIN(region) as region FROM deposits
+           WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL GROUP BY user_id`
+        )
+        .bind(yesterdayStr)
+        .all<{ user_id: number; region: string | null }>();
+      const cohortIds = firstDeposits.results.map((r) => r.user_id);
+      const regionByUser: Record<number, string | null> = {};
+      firstDeposits.results.forEach((r) => { regionByUser[r.user_id] = r.region; });
+
+      const todayAgg = await env.daily_records_db
+        .prepare(
+          `SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`
+        )
+        .bind(anchorDate)
+        .all<{ user_id: number; day_deposit: number; deposit_count: number }>();
+      const todayByUser: Record<number, { day_deposit: number; deposit_count: number }> = {};
+      todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
+
+      const cityByUser: Record<number, string | null> = {};
+      for (let i = 0; i < cohortIds.length; i += 90) {
+        const chunk = cohortIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const res = await env.master_db
+          .prepare(`SELECT user_id, city FROM users WHERE user_id IN (${placeholders})`)
+          .bind(...chunk)
+          .all<{ user_id: number; city: string | null }>();
+        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; });
+      }
+
+      const retainedRows = cohortIds
+        .filter((uid) => todayByUser[uid] !== undefined)
+        .map((uid) => ({
+          user_id: uid,
+          day_deposit: todayByUser[uid].day_deposit,
+          deposit_count: todayByUser[uid].deposit_count,
+          region: cityByUser[uid] || regionByUser[uid] || "Unknown",
+        }))
+        .sort((a, b) => b.day_deposit - a.day_deposit);
+
+      const cohortSize = cohortIds.length;
+      const retainedCount = retainedRows.length;
+      const avgDeposit = retainedCount > 0 ? retainedRows.reduce((s, r) => s + r.day_deposit, 0) / retainedCount : 0;
+
+      const total = retainedRows.length;
+      const start = (page - 1) * pageSize;
+      return Response.json({
+        date: anchorDate,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: retainedRows.slice(start, start + pageSize),
+        cohortSize,
+        retainedCount,
+        avgDeposit,
+      });
+    }
+
+    // Analytics page section 4 (panels 3-4): Premium Active. Cohort = every
+    // user currently in the given VIP bracket (via total_deposit),
+    // regardless of activity status — NOT the Active Users definition used
+    // in Action Center (which additionally requires recent activity).
+    // "Deposited today" = any COMPLETE deposit from that cohort today.
+    if (url.pathname === "/api/dashboard/analytics/premium-active" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const [minLevel, maxLevel] = tier === "low" ? [2, 4] : [5, 14];
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      const cohortCountRow = await env.master_db
+        .prepare(
+          `SELECT COUNT(*) as c FROM (SELECT ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL)
+           WHERE current_level BETWEEN ? AND ?`
+        )
+        .bind(minLevel, maxLevel)
+        .first<{ c: number }>();
+      const cohortSize = cohortCountRow?.c ?? 0;
+
+      const todayAgg = await env.daily_records_db
+        .prepare(
+          `SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`
+        )
+        .bind(anchorDate)
+        .all<{ user_id: number; day_deposit: number; deposit_count: number }>();
+      const todayIds = todayAgg.results.map((r) => r.user_id);
+      const todayByUser: Record<number, { day_deposit: number; deposit_count: number }> = {};
+      todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
+
+      type MasterRow = { user_id: number; current_level: number };
+      let masterRows: MasterRow[] = [];
+      for (let i = 0; i < todayIds.length; i += 90) {
+        const chunk = todayIds.slice(i, i + 90);
+        const placeholders = chunk.map(() => "?").join(",");
+        const res = await env.master_db
+          .prepare(`SELECT user_id, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
+          .bind(...chunk)
+          .all<MasterRow>();
+        masterRows = masterRows.concat(res.results);
+      }
+
+      const matchedRows = masterRows
+        .filter((r) => r.current_level >= minLevel && r.current_level <= maxLevel)
+        .map((r) => ({
+          user_id: r.user_id,
+          current_level: r.current_level,
+          day_deposit: todayByUser[r.user_id].day_deposit,
+          deposit_count: todayByUser[r.user_id].deposit_count,
+        }))
+        .sort((a, b) => b.day_deposit - a.day_deposit);
+
+      const retainedCount = matchedRows.length;
+      const avgDeposit = retainedCount > 0 ? matchedRows.reduce((s, r) => s + r.day_deposit, 0) / retainedCount : 0;
+
+      const total = matchedRows.length;
+      const start = (page - 1) * pageSize;
+      return Response.json({
+        date: anchorDate,
+        tier,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: matchedRows.slice(start, start + pageSize),
+        cohortSize,
+        retainedCount,
+        avgDeposit,
       });
     }
 
