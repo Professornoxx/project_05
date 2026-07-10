@@ -1420,15 +1420,17 @@ export default {
         // means a 210 target, not literally 30).
         const days = Math.round((new Date(end + "T00:00:00Z").getTime() - new Date(start + "T00:00:00Z").getTime()) / 86400000) + 1;
 
-        // Reactivation (low/high): fixed daily target (30/10), scaled by
-        // the number of days in range — NOT a ratio against cohort size.
-        // The cohort query below is only used to tell "agent genuinely has
-        // zero users in this bracket" (stays den=0, shown as "no users
-        // assigned") apart from "agent has users but hit 0 reactivations"
-        // (den=target, num=0, shown as 0/target Not Achieved).
-        for (const [key, minLevel, maxLevel, minDays, maxDays, target] of [
+        // The 4 blocks below (reactivation, VIP upgrade, premium active,
+        // retention) are fully independent of each other — different KPI
+        // keys, no shared intermediate state — so they run concurrently via
+        // the outer Promise.all instead of one after another. Same for the
+        // low/high pair within each block. This is the fix for the page
+        // being slow: it was ~70-80 sequential D1 round-trips per load
+        // before (worse on 30/35-day ranges, where retention alone used to
+        // loop once per calendar day).
+        const reactivationTask = Promise.all(([
           ["reactivationLow", 2, 4, 10, 180, 30], ["reactivationHigh", 5, 14, 15, 240, 10],
-        ] as [keyof AgentKPIs, number, number, number, number, number][]) {
+        ] as [keyof AgentKPIs, number, number, number, number, number][]).map(async ([key, minLevel, maxLevel, minDays, maxDays, target]) => {
           const denRows = await env.master_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1463,15 +1465,15 @@ export default {
               }
             });
           }
-        }
+        }));
 
         // VIP Upgrade (low/high): fixed daily target (10/5), scaled by days
         // in range — NOT a ratio against near-upgrade cohort size. Same
         // "cohort presence decides no-users-assigned, target decides the
         // displayed denominator" split as Reactivation above.
-        for (const [key, minLevel, maxLevel, maxGap, target] of [
+        const vipUpgradeTask = Promise.all(([
           ["vipUpgradeLow", 2, 4, 1000, 10], ["vipUpgradeHigh", 5, 13, 50000, 5],
-        ] as [keyof AgentKPIs, number, number, number, number][]) {
+        ] as [keyof AgentKPIs, number, number, number, number][]).map(async ([key, minLevel, maxLevel, maxGap, target]) => {
           const cohortRows = await env.master_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1510,14 +1512,14 @@ export default {
               if (vipLevel(totalAfter) > r.current_level) ensure(r.agent)[key].num++;
             });
           }
-        }
+        }));
 
         // Premium Active (low/high): denominator = agent's total population
         // in that VIP bracket (current state, no activity filter);
         // numerator = of those, who deposited anywhere in [start,end].
-        for (const [key, minLevel, maxLevel] of [
+        const premiumActiveTask = Promise.all(([
           ["premiumActiveLow", 2, 4], ["premiumActiveHigh", 5, 14],
-        ] as [keyof AgentKPIs, number, number][]) {
+        ] as [keyof AgentKPIs, number, number][]).map(async ([key, minLevel, maxLevel]) => {
           const cohortRows = await env.master_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1544,51 +1546,63 @@ export default {
               if (r.current_level >= minLevel && r.current_level <= maxLevel) ensure(r.agent)[key].num++;
             });
           }
-        }
+        }));
 
-        // Retention: no VIP split. Looped per day in range since the cohort
-        // ("yesterday's first-deposit users") refreshes daily — sums
-        // numerator/denominator across every day in [start,end].
-        const dayList: string[] = [];
-        for (let d = new Date(start + "T00:00:00Z"); d <= new Date(end + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1)) {
-          dayList.push(d.toISOString().slice(0, 10));
-        }
-        for (const day of dayList) {
-          const yesterday = new Date(day + "T00:00:00Z");
-          yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-          const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
-          const firstDeposits = await env.daily_records_db
-            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL`)
-            .bind(yesterdayStr)
-            .all<{ user_id: number }>();
-          const cohortIds = firstDeposits.results.map((r) => r.user_id);
-          if (cohortIds.length === 0) continue;
-
-          const todayDeposits = await env.daily_records_db
-            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
-            .bind(day)
-            .all<{ user_id: number }>();
-          const depositedSet = new Set(todayDeposits.results.map((r) => r.user_id));
-
-          const placeholders = cohortIds.map(() => "?").join(",");
-          const res = await env.master_db
-            .prepare(`SELECT user_id, COALESCE(assigned_agent,'Unassigned') as agent FROM users WHERE user_id IN (${placeholders})`)
-            .bind(...cohortIds)
-            .all<{ user_id: number; agent: string }>();
-          res.results.forEach((r) => {
-            ensure(r.agent).retention.den++;
-            if (depositedSet.has(r.user_id)) ensure(r.agent).retention.num++;
+        // Retention: no VIP split. The cohort ("yesterday's first-deposit
+        // users") refreshes daily, but instead of looping per day (N days
+        // = N x 3 queries — the single biggest cost on 30/35-day ranges),
+        // fetch the whole cohort window and the whole deposit window each
+        // in ONE query, then match in memory. cohort_day + 1 day is the
+        // "did they come back" day for that user.
+        const retentionTask = (async () => {
+          const cohortWindowStart = (() => {
+            const d = new Date(start + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10);
+          })();
+          const cohortWindowEnd = (() => {
+            const d = new Date(end + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10);
+          })();
+          const [firstDepositRows, depositDayRows] = await Promise.all([
+            env.daily_records_db
+              .prepare(`SELECT DISTINCT user_id, date(create_time) as cohort_day FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL`)
+              .bind(cohortWindowStart, cohortWindowEnd)
+              .all<{ user_id: number; cohort_day: string }>(),
+            env.daily_records_db
+              .prepare(`SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
+              .bind(start, end)
+              .all<{ user_id: number; dep_day: string }>(),
+          ]);
+          const depositedOnDay = new Set(depositDayRows.results.map((r) => r.user_id + "|" + r.dep_day));
+          const cohortUserIds = Array.from(new Set(firstDepositRows.results.map((r) => r.user_id)));
+          const retentionAgentByUser: Record<number, string> = {};
+          for (let i = 0; i < cohortUserIds.length; i += 90) {
+            const chunk = cohortUserIds.slice(i, i + 90);
+            const placeholders = chunk.map(() => "?").join(",");
+            const res = await env.master_db
+              .prepare(`SELECT user_id, COALESCE(assigned_agent,'Unassigned') as agent FROM users WHERE user_id IN (${placeholders})`)
+              .bind(...chunk)
+              .all<{ user_id: number; agent: string }>();
+            res.results.forEach((r) => { retentionAgentByUser[r.user_id] = r.agent; });
+          }
+          firstDepositRows.results.forEach((r) => {
+            const agent = retentionAgentByUser[r.user_id];
+            if (!agent) return;
+            const nextDay = new Date(r.cohort_day + "T00:00:00Z");
+            nextDay.setUTCDate(nextDay.getUTCDate() + 1);
+            const nextDayStr = nextDay.toISOString().slice(0, 10);
+            ensure(agent).retention.den++;
+            if (depositedOnDay.has(r.user_id + "|" + nextDayStr)) ensure(agent).retention.num++;
           });
-        }
+        })();
 
+        await Promise.all([reactivationTask, vipUpgradeTask, premiumActiveTask, retentionTask]);
         return agents;
       }
 
-      const rangeKPIs = await computeAgentKPIs(rangeStart, rangeEnd);
-
       const monthStart = anchorDate.slice(0, 8) + "01";
-      const monthKPIs = anchorDate === monthStart ? rangeKPIs : await computeAgentKPIs(monthStart, anchorDate);
+      const sameRange = anchorDate === monthStart && rangeStart === monthStart && rangeEnd === anchorDate;
+      const [rangeKPIs, monthKPIs] = sameRange
+        ? await computeAgentKPIs(rangeStart, rangeEnd).then((r) => [r, r] as const)
+        : await Promise.all([computeAgentKPIs(rangeStart, rangeEnd), computeAgentKPIs(monthStart, anchorDate)]);
 
       const scoreOf = (kpis: AgentKPIs): { pct: number | null; kpiPcts: Record<string, number | null> } => {
         const entries = Object.entries(kpis) as [string, Ratio][];
