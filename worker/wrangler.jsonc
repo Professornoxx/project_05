@@ -18,35 +18,10 @@
     }
   ],
 
-  "kv_namespaces": [
-    {
-      "binding": "SYNC_KV",
-      "id": "8e7ee32e4f4f4816ac3df77f84912d15"
-    }
-  ],
-
-  "triggers": {
-    // The hourly sync cron was retired — deposit/withdraw/wallet syncing now
-    // runs on GitHub Actions (Python ETL, see /etl and /.github/workflows),
-    // which has none of the CPU-time/subrequest/self-fetch limits this
-    // Worker-based version kept hitting. Leaving this Worker's own hourly
-    // cron active just produced a second, always-failing set of sync_runs
-    // log entries (error 1042 self-fetch block) alongside the real ones.
-    // Daily at 03:00 UTC: purges sync_runs log entries older than 35 days —
-    // kept here since cleanup.ts still works fine as a Worker cron.
-    "crons": ["0 3 * * *"]
-  },
-
-  "vars": {
-    "PACKAGE_ID": 10,
-    "SYNC_WINDOW_DAYS": 5,
-    "DEPOSIT_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/water/export",
-    "WITHDRAW_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/withdraw/export",
-    "WALLET_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/detail/export",
-    // Used for self-invocation subrequests (see lib/chunkedUpsert.ts) — each
-    // self-fetch is a fresh Worker invocation with its own CPU-time budget,
-    // the free-plan-compatible way to process more rows than a single
-    // invocation's CPU limit allows.
-    "SELF_URL": "https://sync-worker.prightpath-attendance.workers.dev"
-  }
+  // No KV, cron triggers, or export/self-fetch vars here anymore — this
+  // Worker is read-only dashboard serving now. Everything that writes to
+  // daily_records_db (config saves, uploads, manual sync/cleanup triggers,
+  // and the daily cleanup cron) moved to ../worker-upload — see that
+  // project's wrangler.jsonc for why.
+  "vars": {}
 }
