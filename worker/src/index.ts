@@ -1,8 +1,4 @@
 import type { Env } from "./lib/types";
-import { runFullSync, syncSource } from "./lib/sync";
-import { handleMasterUpload, handleAgentUpload } from "./lib/upload";
-import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
-import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
@@ -20,11 +16,6 @@ import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
-import { cleanupOldSyncRuns } from "./lib/cleanup";
-import type { ChunkRow } from "./lib/chunkedUpsert";
-
-const DAILY_CLEANUP_CRON = "0 3 * * *";
-const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
 
 // Source data's create_time values are IST-labeled (naive, no timezone
 // suffix) — confirmed by a deposit timestamped 10:50 when actual UTC time
@@ -49,130 +40,12 @@ function requireAdmin(request: Request, env: Env, area: AuthArea): Response | nu
 }
 
 export default {
-  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    const executionId = `${controller.cron}-${controller.scheduledTime}`;
-    const already = await env.SYNC_KV.get(executionId);
-    if (already) {
-      controller.noRetry();
-      return;
-    }
-    await env.SYNC_KV.put(executionId, "1", { expirationTtl: 86400 });
-
-    if (controller.cron === DAILY_CLEANUP_CRON) {
-      ctx.waitUntil(
-        cleanupOldSyncRuns(env)
-          .then((result) => console.log("cleanupOldSyncRuns:", JSON.stringify(result)))
-          .catch((err) => console.error("cleanupOldSyncRuns failed:", err))
-      );
-      return;
-    }
-
-    ctx.waitUntil(
-      runFullSync(env).catch((err) => console.error("runFullSync failed:", err))
-    );
-  },
-
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // Block the local test endpoint in production (see cron-triggers gotchas).
     if (url.pathname === "/__scheduled") {
       return new Response("Not Found", { status: 404 });
-    }
-
-    // Internal-only: writes one chunk of rows into daily_records_db.
-    // Called by this same Worker via self-fetch (see chunkedUpsert.ts) so
-    // each chunk gets its own fresh CPU-time budget — deliberately gated by
-    // a separate secret from the admin login, since this is server-to-
-    // server, not something the browser/admin session should be able to hit.
-    if (url.pathname === "/internal/write-chunk" && request.method === "POST") {
-      if (request.headers.get("x-internal-secret") !== env.INTERNAL_SECRET) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-      const body = (await request.json()) as { table?: string; rows?: ChunkRow[]; synced_at?: string };
-      if (!body.table || !CHUNK_WRITE_TABLES.has(body.table) || !Array.isArray(body.rows) || !body.synced_at) {
-        return Response.json({ error: "invalid chunk payload" }, { status: 400 });
-      }
-      const statements = body.rows.map((r) =>
-        env.daily_records_db
-          .prepare(
-            `INSERT INTO ${body.table} (record_key, user_id, amount, status, create_time, synced_at)
-             VALUES (?, ?, ?, ?, ?, ?)
-             ON CONFLICT(record_key) DO UPDATE SET
-               user_id = excluded.user_id,
-               amount = excluded.amount,
-               status = excluded.status,
-               create_time = excluded.create_time,
-               synced_at = excluded.synced_at`
-          )
-          .bind(r.record_key, r.user_id, r.amount, r.status, r.create_time, body.synced_at)
-      );
-      await env.daily_records_db.batch(statements);
-      return Response.json({ written: statements.length });
-    }
-
-    if (url.pathname === "/api/sync/trigger" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
-      const source = url.searchParams.get("source");
-      const results =
-        source && source !== "all"
-          ? [await syncSource(source as "wallet" | "deposit" | "withdraw", env)]
-          : await runFullSync(env);
-      return Response.json({ results });
-    }
-
-    if (url.pathname === "/api/cleanup/trigger" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
-      const result = await cleanupOldSyncRuns(env);
-      return Response.json(result);
-    }
-
-    if (url.pathname === "/api/sync/status" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
-      const runs = await env.daily_records_db
-        .prepare("SELECT * FROM sync_runs ORDER BY started_at DESC LIMIT 50")
-        .all();
-      return Response.json(runs.results);
-    }
-
-    // Dedicated Configuration page — its own URL, its own independent login
-    // session (config_session), completely separate from Dashboard's
-    // session. Gated server-side: unauthenticated visitors are redirected
-    // to /config/login and never see the real form or its markup. Stopgap
-    // until a custom domain exists and this can sit behind real Cloudflare
-    // Access + SSO/email OTP.
-    if (url.pathname === "/config" && request.method === "GET") {
-      if (!isAuthed(request, env, "config")) {
-        return new Response(null, { status: 302, headers: { Location: "/config/login" } });
-      }
-      return new Response(CONFIG_PAGE_HTML, {
-        headers: { "content-type": "text/html; charset=utf-8" },
-      });
-    }
-
-    if (url.pathname === "/config/login" && request.method === "GET") {
-      return new Response(
-        renderLoginPage({ title: "Configuration Login", postUrl: "/config/login", redirectUrl: "/config" }),
-        { headers: { "content-type": "text/html; charset=utf-8" } }
-      );
-    }
-
-    if (url.pathname === "/config/login" && request.method === "POST") {
-      const body = (await request.json()) as { key?: string };
-      if (!body.key || body.key !== env.ADMIN_API_KEY) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-      return new Response(null, {
-        status: 204,
-        headers: { "Set-Cookie": sessionCookieHeader("config", body.key) },
-      });
-    }
-
-    if (url.pathname === "/config/logout" && request.method === "POST") {
-      return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader("config") } });
     }
 
     // New sidebar-based dashboard — its own URL per page, all under /dashboard,
@@ -1607,78 +1480,10 @@ export default {
       return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader("dashboard") } });
     }
 
-    if (url.pathname === "/api/config/token" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "config");
-      if (authFail) return authFail;
-      const body = (await request.json()) as { token?: string };
-      if (!body.token) {
-        return Response.json({ error: "token is required" }, { status: 400 });
-      }
-      await setBearerToken(env, body.token);
-      // Sync runs in the background (ctx.waitUntil), not awaited inline.
-      // The export APIs can be slow or hang (observed 2+ minute calls) —
-      // awaiting them here made the whole HTTP request run past Cloudflare's
-      // edge timeout, which killed the connection and returned a Cloudflare
-      // error page instead of our JSON, breaking the client's res.json().
-      // The token save itself is fast and already durable by the time this
-      // responds; check /api/sync/status for the sync's actual outcome.
-      ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
-      return Response.json({ saved: true, syncTriggered: "started — check /api/sync/status for results" });
-    }
-
-    if (url.pathname === "/api/config/export-urls" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "config");
-      if (authFail) return authFail;
-      return Response.json(await getAllExportUrls(env));
-    }
-
-    if (url.pathname === "/api/config/export-urls" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "config");
-      if (authFail) return authFail;
-      const body = (await request.json()) as Partial<Record<"deposit" | "withdraw" | "wallet", string>>;
-      const sources = ["deposit", "withdraw", "wallet"] as const;
-      for (const source of sources) {
-        const value = body[source];
-        if (typeof value === "string" && value.trim() !== "") {
-          await setExportUrl(env, source, value.trim());
-        }
-      }
-      return Response.json({ saved: true, urls: await getAllExportUrls(env) });
-    }
-
-    if (url.pathname === "/api/config/upload" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "config");
-      if (authFail) return authFail;
-      const form = await request.formData();
-      const file = form.get("file") as File | null;
-      if (file === null || typeof file.arrayBuffer !== "function") {
-        return Response.json({ error: "missing file field" }, { status: 400 });
-      }
-      const buffer = await file.arrayBuffer();
-      const uploadResult = await handleMasterUpload(buffer, env, file.name);
-      // Same reasoning as /api/config/token above: don't await the
-      // follow-on export sync inline, it can outlive Cloudflare's edge
-      // timeout for the client's HTTP request.
-      ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
-      return Response.json({ upload: uploadResult, syncTriggered: "started — check /api/sync/status for results" });
-    }
-
-    // Agent-assignment upload: a wide matrix (one column per agent, cells
-    // are user_ids) rather than the master upload's row-per-user shape —
-    // see handleAgentUpload's comment. No sync trigger needed afterward,
-    // this only touches users.assigned_agent, nothing export-related.
-    if (url.pathname === "/api/config/upload-agents" && request.method === "POST") {
-      const authFail = requireAdmin(request, env, "config");
-      if (authFail) return authFail;
-      const form = await request.formData();
-      const file = form.get("file") as File | null;
-      if (file === null || typeof file.arrayBuffer !== "function") {
-        return Response.json({ error: "missing file field" }, { status: 400 });
-      }
-      const buffer = await file.arrayBuffer();
-      const uploadResult = await handleAgentUpload(buffer, env, file.name);
-      return Response.json({ upload: uploadResult });
-    }
+    // Configuration + everything else that writes to daily_records_db
+    // (master/agent uploads, manual sync/cleanup triggers) now lives on
+    // upload-worker — see worker-upload/src/index.ts. This Worker is
+    // read-only: a bug or leaked key here can't reach those routes.
 
     return new Response("Not Found", { status: 404 });
   },

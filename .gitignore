@@ -6,6 +6,9 @@ import_batches/
 worker/node_modules/
 worker/.wrangler/
 worker/.dev.vars
+worker-upload/node_modules/
+worker-upload/.wrangler/
+worker-upload/.dev.vars
 
 # Editor/OS
 .DS_Store

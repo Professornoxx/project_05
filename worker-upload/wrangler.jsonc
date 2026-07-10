@@ -1,0 +1,46 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "upload-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Write/admin side of the split described in worker/wrangler.jsonc's
+  // sibling comment: this Worker owns every route that mutates
+  // daily-records-db (config saves, master/agent uploads, manual sync +
+  // cleanup triggers) plus the daily cleanup cron. sync-worker is now
+  // read-only — a bug or leaked key there can no longer reach these routes.
+  "d1_databases": [
+    {
+      "binding": "daily_records_db",
+      "database_name": "daily-records-db",
+      "database_id": "4aa7eec5-5bd7-4c6e-ba5c-a732bebe187b"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "SYNC_KV",
+      "id": "8e7ee32e4f4f4816ac3df77f84912d15"
+    }
+  ],
+
+  "triggers": {
+    // Daily cleanup (purges sync_runs entries older than 35 days) moved
+    // here from sync-worker — it's a write operation, belongs with the
+    // rest of the admin/write surface.
+    "crons": ["0 3 * * *"]
+  },
+
+  "vars": {
+    "PACKAGE_ID": 10,
+    "SYNC_WINDOW_DAYS": 5,
+    "DEPOSIT_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/water/export",
+    "WITHDRAW_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/withdraw/export",
+    "WALLET_EXPORT_URL": "https://api.rumanagers.online/prod-api/business/detail/export",
+    // Points at THIS Worker's own deployed URL now (not sync-worker's) —
+    // /internal/write-chunk moved here too, so the chunked-upsert self-fetch
+    // in chunkedUpsert.ts must call back into this same Worker instance.
+    "SELF_URL": "https://upload-worker.prightpath-attendance.workers.dev"
+  }
+}
