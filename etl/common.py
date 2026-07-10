@@ -50,6 +50,37 @@ CALLBACK_TIME_FIELD_CANDIDATES = ["callbackTime", "callback_time"]
 # section to flag genuinely-new depositors and show where they're from.
 FIRST_DEPOSIT_FIELD_CANDIDATES = ["是否是首充，0不是首充，1是首充", "is_first_deposit"]
 REGION_FIELD_CANDIDATES = ["RegisterCity", "region"]
+# Master-db profile fields incidentally present on the transaction exports —
+# used to auto-update master_db.users from the deposit/withdraw/wallet syncs
+# instead of requiring a dedicated user-list export (none was found to
+# exist). Deliberately narrow: only fields with an unambiguous 1:1 meaning
+# match to an existing master_db.users column. Two things confirmed absent
+# on purpose:
+#   - "createTime": master_db.users.create_time is a generic record-touched
+#     timestamp already populated by manual uploads, not a registration
+#     date — reusing a row's createTime for it would be a category
+#     mismatch, not a real update.
+#   - "RegisterCity"/"cfIpRegisterCity": confirmed live against a real
+#     existing user that master_db.city holds STATE-level values ("Tamil
+#     Nadu" — what the Analytics "Top 10 Regions" chart relies on) while
+#     these export fields are CITY-level ("Alīgarh") — different
+#     granularity, not alternate sources for the same value. Auto-syncing
+#     this would silently corrupt the state-level convention every other
+#     region-based report already depends on. deposits.region already
+#     captures the city-level value separately and correctly.
+USER_PHONE_FIELD_CANDIDATES = ["userPhone", "UserPhone"]
+USER_MARK_FIELD_CANDIDATES = ["mark"]
+MEMBER_LEVEL_FIELD_CANDIDATES = ["memberLevel"]
+WALLET_BALANCE_FIELD_CANDIDATES = ["changeAfter"]
+
+
+def extract_user_profile_fields(row: dict) -> dict:
+    return {
+        "phone": _coerce(_pick(row, USER_PHONE_FIELD_CANDIDATES)),
+        "mark": _coerce(_pick(row, USER_MARK_FIELD_CANDIDATES)),
+        "member_level": _coerce(_pick(row, MEMBER_LEVEL_FIELD_CANDIDATES)),
+        "wallet_balance": _coerce(_pick(row, WALLET_BALANCE_FIELD_CANDIDATES)),
+    }
 
 
 def _pick(row: dict, candidates: list[str]):
