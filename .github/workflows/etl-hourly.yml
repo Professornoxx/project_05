@@ -8,6 +8,15 @@ on:
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
+# A slow run (e.g. a large wallet sync) can still be writing to D1 when the
+# next hourly trigger fires. Without this, GitHub would start a second run
+# concurrently — two ETL runs racing to upsert the same rows. Queue instead
+# of running in parallel; don't cancel the in-progress run since a partial
+# ETL write is worse than a late one.
+concurrency:
+  group: db-ingest
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
