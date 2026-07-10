@@ -339,12 +339,21 @@ export default {
     // (is_first_deposit, captured on deposits from the export field
     // "是否是首充，0不是首充，1是首充") rather than us inferring "first" from
     // history, since a user's deposit history here only goes back as far as
-    // SYNC_WINDOW_DAYS anyway. deposits (daily_records_db) and users
-    // (master_db) are separate D1 databases with no cross-DB JOIN, so this
-    // does two queries and merges in memory — the result set here is small
-    // (bounded by however many first-time depositors happened in one day),
-    // so paginating in memory after merging is simpler and safer than
-    // trying to paginate correctly across two independently-sorted sources.
+    // SYNC_WINDOW_DAYS anyway.
+    //
+    // Phase 2 rewrite: deposits and users now live in the same merged
+    // database, so this is a real LEFT JOIN instead of two queries merged
+    // in memory. Deliberately still LEFT JOIN (not INNER) against users —
+    // master_db-origin fields (city, assigned_agent) only update from
+    // periodic manual uploads / the profile-sync fields, so brand-new
+    // users (who by definition just made their FIRST deposit) can easily
+    // not have a users row yet. An INNER JOIN would silently drop them
+    // (confirmed live pre-merge: 7 flagged first-deposit users, 0 matches
+    // against an INNER JOIN). total_deposit/total_withdrawal/VIP level
+    // here are computed from THIS query's own deposit/withdraw totals
+    // within the tracked window, not users.total_deposit (which is a
+    // separate, potentially stale lifetime figure) — same reasoning as
+    // before the merge, just expressed as CTEs instead of JS objects.
     if (url.pathname === "/api/dashboard/action-center/yesterday-first-deposits" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -356,102 +365,61 @@ export default {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       const yesterdayStr = yesterday.toISOString().slice(0, 10);
 
-      const firstDeposits = await env.daily_records_db
-        .prepare(
-          `SELECT user_id, MIN(region) as region
-           FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
-           GROUP BY user_id`
-        )
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      const CTE = `WITH first_deposit_users AS (
+          SELECT user_id, MIN(region) as region
+          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
+          GROUP BY user_id
+        ),
+        deposit_agg AS (
+          SELECT user_id, COALESCE(SUM(amount),0) as total_deposit, COUNT(*) as deposit_count
+          FROM deposits WHERE status = 'COMPLETE' AND user_id IN (SELECT user_id FROM first_deposit_users)
+          GROUP BY user_id
+        ),
+        withdraw_agg AS (
+          SELECT user_id, COALESCE(SUM(amount),0) as total_withdrawal
+          FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IN (SELECT user_id FROM first_deposit_users)
+          GROUP BY user_id
+        )`;
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM first_deposit_users`)
         .bind(yesterdayStr)
-        .all<{ user_id: number; region: string | null }>();
+        .first<{ c: number }>();
 
-      const userIds = firstDeposits.results.map((r) => r.user_id);
-      const regionByUser: Record<number, string | null> = {};
-      firstDeposits.results.forEach((r) => { regionByUser[r.user_id] = r.region; });
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                  COALESCE(u.city, f.region, 'Unknown') as region,
+                  COALESCE(d.total_deposit, 0) as total_deposit,
+                  ${CURRENT_LEVEL.replace(/total_deposit/g, "COALESCE(d.total_deposit, 0)")} as current_level,
+                  COALESCE(d.deposit_count, 0) as deposit_count,
+                  COALESCE(w.total_withdrawal, 0) as total_withdrawal,
+                  COALESCE(d.total_deposit, 0) - COALESCE(w.total_withdrawal, 0) as profit_loss
+           FROM first_deposit_users f
+           LEFT JOIN deposit_agg d ON d.user_id = f.user_id
+           LEFT JOIN withdraw_agg w ON w.user_id = f.user_id
+           LEFT JOIN users u ON u.user_id = f.user_id
+           ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
+        )
+        .bind(yesterdayStr, pageSize, (page - 1) * pageSize)
+        .all();
 
-      // Deposit/withdraw totals come from daily_records_db (the same source
-      // the first-deposit flag itself came from), NOT master_db.users —
-      // master_db only updates from periodic manual uploads, so brand-new
-      // users (who by definition just made their FIRST deposit) are very
-      // likely to be missing from it entirely. An inner join against
-      // master_db silently dropped every one of them (confirmed live: 7
-      // flagged first-deposit users, 0 matches in master_db.users).
-      type DepositAgg = { user_id: number; total_deposit: number; deposit_count: number };
-      type WithdrawAgg = { user_id: number; total_withdrawal: number };
-      let depositAggs: DepositAgg[] = [];
-      let withdrawAggs: WithdrawAgg[] = [];
-      for (let i = 0; i < userIds.length; i += 90) {
-        const chunk = userIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const dep = await env.daily_records_db
-          .prepare(
-            `SELECT user_id, COALESCE(SUM(amount),0) as total_deposit, COUNT(*) as deposit_count
-             FROM deposits WHERE status = 'COMPLETE' AND user_id IN (${placeholders}) GROUP BY user_id`
-          )
-          .bind(...chunk)
-          .all<DepositAgg>();
-        depositAggs = depositAggs.concat(dep.results);
-
-        const wd = await env.daily_records_db
-          .prepare(
-            `SELECT user_id, COALESCE(SUM(amount),0) as total_withdrawal
-             FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IN (${placeholders}) GROUP BY user_id`
-          )
-          .bind(...chunk)
-          .all<WithdrawAgg>();
-        withdrawAggs = withdrawAggs.concat(wd.results);
-      }
-
-      // Optional: master_db.city, when the user does happen to already be
-      // there — falls back to the deposit export's own RegisterCity field.
-      const cityByUser: Record<number, string | null> = {};
-      const agentByUser: Record<number, string | null> = {};
-      for (let i = 0; i < userIds.length; i += 90) {
-        const chunk = userIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.daily_records_db
-          .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
-          .bind(...chunk)
-          .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
-        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; agentByUser[r.user_id] = r.assigned_agent; });
-      }
-
-      const depositByUser: Record<number, DepositAgg> = {};
-      depositAggs.forEach((r) => { depositByUser[r.user_id] = r; });
-      const withdrawByUser: Record<number, number> = {};
-      withdrawAggs.forEach((r) => { withdrawByUser[r.user_id] = r.total_withdrawal; });
-
-      const vipLevel = (totalDeposit: number): number => {
-        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
-        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
-        return 14;
-      };
-
-      const merged = userIds.map((uid) => {
-        const dep = depositByUser[uid];
-        const totalDeposit = dep?.total_deposit ?? 0;
-        const totalWithdrawal = withdrawByUser[uid] ?? 0;
-        return {
-          user_id: uid,
-          agent: agentByUser[uid] || "Unassigned",
-          current_level: vipLevel(totalDeposit),
-          deposit_count: dep?.deposit_count ?? 0,
-          total_deposit: totalDeposit,
-          total_withdrawal: totalWithdrawal,
-          profit_loss: totalDeposit - totalWithdrawal,
-          region: cityByUser[uid] || regionByUser[uid] || "Unknown",
-        };
-      }).sort((a, b) => b.total_deposit - a.total_deposit);
-
-      const total = merged.length;
-      const start = (page - 1) * pageSize;
+      const total = countRow?.c ?? 0;
       return Response.json({
         date: yesterdayStr,
         page,
         pageSize,
         total,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: merged.slice(start, start + pageSize),
+        rows: rows.results,
       });
     }
 
@@ -885,90 +853,62 @@ export default {
 
       const date = url.searchParams.get("date") || todayIST();
 
-      const dayDeposits = await env.daily_records_db
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+
+      const CTE = `WITH day_dep AS (
+          SELECT user_id, SUM(amount) as day_deposit, MIN(region) as region
+          FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+          GROUP BY user_id
+        ),
+        merged AS (
+          SELECT d.user_id, d.day_deposit,
+                 COALESCE(u.city, d.region, 'Unknown') as region,
+                 ${CURRENT_LEVEL.replace(/total_deposit/g, "COALESCE(u.total_deposit, 0)")} as vip_level
+          FROM day_dep d LEFT JOIN users u ON u.user_id = d.user_id
+        )`;
+
+      const topRegionsRes = await env.daily_records_db
         .prepare(
-          `SELECT user_id, SUM(amount) as day_deposit, MIN(region) as region
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL
-           GROUP BY user_id`
+          `${CTE} SELECT region, SUM(day_deposit) as total, COUNT(*) as users
+           FROM merged GROUP BY region ORDER BY total DESC LIMIT 10`
         )
         .bind(date)
-        .all<{ user_id: number; day_deposit: number; region: string | null }>();
+        .all<{ region: string; total: number; users: number }>();
 
-      const userIds = dayDeposits.results.map((r) => r.user_id);
-      const dayDepositByUser: Record<number, number> = {};
-      const fallbackRegionByUser: Record<number, string | null> = {};
-      dayDeposits.results.forEach((r) => {
-        dayDepositByUser[r.user_id] = r.day_deposit;
-        fallbackRegionByUser[r.user_id] = r.region;
-      });
+      const byVipLevelRes = await env.daily_records_db
+        .prepare(
+          `${CTE} SELECT vip_level as level, SUM(day_deposit) as total, COUNT(*) as users
+           FROM merged GROUP BY vip_level ORDER BY vip_level ASC`
+        )
+        .bind(date)
+        .all<{ level: number; total: number; users: number }>();
 
-      type MasterRow = { user_id: number; city: string | null; total_deposit: number | null };
-      const chunks: number[][] = [];
-      for (let i = 0; i < userIds.length; i += 90) chunks.push(userIds.slice(i, i + 90));
-      const chunkResults = await Promise.all(
-        chunks.map((chunk) => {
-          const placeholders = chunk.map(() => "?").join(",");
-          return env.daily_records_db
-            .prepare(`SELECT user_id, city, total_deposit FROM users WHERE user_id IN (${placeholders})`)
-            .bind(...chunk)
-            .all<MasterRow>();
-        })
-      );
-      const masterByUser: Record<number, MasterRow> = {};
-      chunkResults.forEach((res) => res.results.forEach((r) => { masterByUser[r.user_id] = r; }));
-
-      const vipLevel = (totalDeposit: number): number => {
-        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
-        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
-        return 14;
-      };
-
-      const byRegion: Record<string, { total: number; users: Set<number> }> = {};
-      const byVip: Record<number, { total: number; users: Set<number> }> = {};
-
-      userIds.forEach((uid) => {
-        const dayAmt = dayDepositByUser[uid] ?? 0;
-        const master = masterByUser[uid];
-        const region = (master && master.city) || fallbackRegionByUser[uid] || "Unknown";
-        const level = vipLevel(master?.total_deposit ?? 0);
-
-        if (!byRegion[region]) byRegion[region] = { total: 0, users: new Set() };
-        byRegion[region].total += dayAmt;
-        byRegion[region].users.add(uid);
-
-        if (!byVip[level]) byVip[level] = { total: 0, users: new Set() };
-        byVip[level].total += dayAmt;
-        byVip[level].users.add(uid);
-      });
-
-      const topRegions = Object.entries(byRegion)
-        .map(([region, v]) => ({ region, total: v.total, users: v.users.size }))
-        .sort((a, b) => b.total - a.total)
-        .slice(0, 10);
-
-      const byVipLevel = Object.entries(byVip)
-        .map(([level, v]) => ({ level: Number(level), total: v.total, users: v.users.size }))
-        .sort((a, b) => a.level - b.level);
-
-      return Response.json({ date, topRegions, byVipLevel });
+      return Response.json({ date, topRegions: topRegionsRes.results, byVipLevel: byVipLevelRes.results });
     }
 
     // Analytics page section 2: Reactivation. "Reactivated" = a user
-    // currently counted inactive per master_db (same definition as Action
-    // Center's Inactive Users: current VIP bracket + inactive_days window,
-    // computed from last_active_time) who has ALSO made a completed
-    // deposit recently. This works specifically because master_db.users
-    // only updates from periodic manual uploads (established earlier,
-    // section 3 of Action Center) — last_active_time does NOT get bumped
-    // by today's deposit, so a just-reactivated user still shows up as
-    // "inactive" here, letting us intersect the two sets meaningfully
-    // instead of everyone always looking freshly active. The 3-day
-    // conversion rate uses the CURRENT inactive cohort size as its
-    // denominator (an approximation — we don't have historical cohort
-    // snapshots). 7-day is not computable at all: deposits data only
-    // covers a rolling SYNC_WINDOW_DAYS=5-day window, so a 7-day lookback
-    // would silently undercount — shown as "not enough history yet"
-    // instead of a misleading number.
+    // currently counted inactive (current VIP bracket + inactive_days
+    // window, computed from last_active_time) who has ALSO made a
+    // completed deposit recently. This works specifically because
+    // users.last_active_time only updates from periodic manual uploads /
+    // the profile-sync fields — it does NOT get bumped by today's deposit,
+    // so a just-reactivated user still shows up as "inactive" here,
+    // letting us intersect the two sets meaningfully instead of everyone
+    // always looking freshly active. The 3-day conversion rate uses the
+    // CURRENT inactive cohort size as its denominator (an approximation —
+    // we don't have historical cohort snapshots). 7-day is not computable
+    // at all: deposits data only covers a rolling SYNC_WINDOW_DAYS=5-day
+    // window, so a 7-day lookback would silently undercount — shown as
+    // "not enough history yet" instead of a misleading number.
+    //
+    // Phase 2 rewrite: cohort + deposit activity now live in the same
+    // database, so this is CTEs + JOINs instead of a batched candidate-ID
+    // lookup merged in memory.
     if (url.pathname === "/api/dashboard/analytics/reactivation" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -990,71 +930,62 @@ export default {
         WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
         WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
 
+      const CTE = `WITH cohort AS (
+          SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
+                 CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+        ),
+        cohort_filtered AS (
+          SELECT * FROM cohort WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?
+        ),
+        today_dep AS (
+          SELECT user_id, SUM(amount) as day_deposit FROM deposits
+          WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        three_day_dep AS (
+          SELECT DISTINCT user_id FROM deposits
+          WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+        )`;
+      const cteArgs = [minLevel, maxLevel, minDays, maxDays, anchorDate, threeDaysAgoStr, anchorDate];
+
       const cohortCountRow = await env.daily_records_db
-        .prepare(
-          `SELECT COUNT(*) as c FROM (
-             SELECT ${CURRENT_LEVEL} as current_level,
-                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-             FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
-           ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`
-        )
-        .bind(minLevel, maxLevel, minDays, maxDays)
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+        .bind(...cteArgs)
         .first<{ c: number }>();
       const cohortSize = cohortCountRow?.c ?? 0;
 
-      // Small sets (today's / last-3-days' depositors), not the whole
-      // multi-thousand inactive cohort — cheap to look up individually.
-      const todayDeposits = await env.daily_records_db
-        .prepare(`SELECT user_id, SUM(amount) as day_deposit FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
-        .bind(anchorDate)
-        .all<{ user_id: number; day_deposit: number }>();
-      const threeDayDeposits = await env.daily_records_db
-        .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
-        .bind(threeDaysAgoStr, anchorDate)
-        .all<{ user_id: number }>();
+      const reactivatedCountRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const reactivatedTodayCount = reactivatedCountRow?.c ?? 0;
 
-      const todayDepositByUser: Record<number, number> = {};
-      todayDeposits.results.forEach((r) => { todayDepositByUser[r.user_id] = r.day_deposit; });
-      const threeDaySet = new Set(threeDayDeposits.results.map((r) => r.user_id));
-      const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...threeDaySet]));
+      const reactivated3DayRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t ON t.user_id = c.user_id`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const reactivated3DayCount = reactivated3DayRow?.c ?? 0;
 
-      type MasterRow = { user_id: number; current_level: number; inactive_days: number; agent: string | null };
-      let masterRows: MasterRow[] = [];
-      for (let i = 0; i < candidateIds.length; i += 90) {
-        const chunk = candidateIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.daily_records_db
-          .prepare(
-            `SELECT user_id, ${CURRENT_LEVEL} as current_level, assigned_agent as agent,
-                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-             FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL AND last_active_time IS NOT NULL`
-          )
-          .bind(...chunk)
-          .all<MasterRow>();
-        masterRows = masterRows.concat(res.results);
-      }
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level, c.inactive_days, t.day_deposit
+           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+           ORDER BY c.inactive_days DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
 
-      const cohortMembers = masterRows.filter(
-        (r) => r.current_level >= minLevel && r.current_level <= maxLevel && r.inactive_days >= minDays && r.inactive_days <= maxDays
-      );
-      const reactivatedTodayRows = cohortMembers
-        .filter((r) => todayDepositByUser[r.user_id] !== undefined)
-        .map((r) => ({ user_id: r.user_id, agent: r.agent || "Unassigned", current_level: r.current_level, inactive_days: r.inactive_days, day_deposit: todayDepositByUser[r.user_id] }))
-        .sort((a, b) => b.inactive_days - a.inactive_days);
-      const reactivated3DayCount = cohortMembers.filter((r) => threeDaySet.has(r.user_id)).length;
-
-      const total = reactivatedTodayRows.length;
-      const start = (page - 1) * pageSize;
       return Response.json({
         date: anchorDate,
         tier,
         page,
         pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: reactivatedTodayRows.slice(start, start + pageSize),
+        total: reactivatedTodayCount,
+        totalPages: Math.max(1, Math.ceil(reactivatedTodayCount / pageSize)),
+        rows: rows.results,
         cohortSize,
-        reactivatedTodayCount: total,
+        reactivatedTodayCount,
         reactivated3DayCount,
       });
     }
@@ -1063,12 +994,18 @@ export default {
     // Reactivation (see that endpoint's comment): the cohort is the
     // "near-upgrade" set — same definition as Action Center's VIP Near
     // Upgrade (current VIP bracket + gap-to-next-bracket window, computed
-    // from master_db.total_deposit, which lags behind today's activity).
+    // from users.total_deposit, which lags behind today's activity).
     // "Upgraded today" = a cohort member whose TODAY's deposit(s), added
     // on top of that lagging total_deposit baseline, push them past the
-    // next bracket's floor. total_deposit in master_db is treated as the
-    // pre-today baseline specifically because it doesn't reflect today's
-    // deposits yet — same staleness fact that made Reactivation work.
+    // next bracket's floor. total_deposit is treated as the pre-today
+    // baseline specifically because it doesn't reflect today's deposits
+    // yet — same staleness fact that made Reactivation work.
+    //
+    // Phase 2 rewrite: CTEs + JOINs instead of a batched candidate-ID
+    // lookup merged in memory. vip_after can't be a stored column (it
+    // depends on today's deposit total, computed per-request), so the
+    // same bracket CASE expression is reused with its input swapped to
+    // "total_deposit + today's deposit" via levelCaseFor().
     if (url.pathname === "/api/dashboard/analytics/vip-upgrade" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -1083,12 +1020,13 @@ export default {
 
       const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const levelCaseFor = (expr: string) => `CASE
+        WHEN ${expr} < 100 THEN 0 WHEN ${expr} < 600 THEN 1 WHEN ${expr} < 5600 THEN 2
+        WHEN ${expr} < 15600 THEN 3 WHEN ${expr} < 95600 THEN 4 WHEN ${expr} < 295600 THEN 5
+        WHEN ${expr} < 795600 THEN 6 WHEN ${expr} < 1795600 THEN 7 WHEN ${expr} < 3795600 THEN 8
+        WHEN ${expr} < 8795600 THEN 9 WHEN ${expr} < 16795600 THEN 10 WHEN ${expr} < 28795600 THEN 11
+        WHEN ${expr} < 44795600 THEN 12 WHEN ${expr} < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = levelCaseFor("total_deposit");
       const NEXT_LEVEL_MIN = `CASE
         WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
         WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
@@ -1096,96 +1034,74 @@ export default {
         WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
         WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
 
+      const CTE = `WITH cohort AS (
+          SELECT user_id, assigned_agent as agent, total_deposit,
+                 ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+          FROM users WHERE total_deposit IS NOT NULL
+        ),
+        cohort_filtered AS (
+          SELECT * FROM cohort WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+            AND (next_level_min - total_deposit) BETWEEN 1 AND ?
+        ),
+        today_dep AS (
+          SELECT user_id, SUM(amount) as day_deposit FROM deposits
+          WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        three_day_dep AS (
+          SELECT user_id, SUM(amount) as amt FROM deposits
+          WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        )`;
+      const cteArgs = [minLevel, maxLevel, maxGap, anchorDate, threeDaysAgoStr, anchorDate];
+      const VIP_AFTER_TODAY = levelCaseFor("(c.total_deposit + t.day_deposit)");
+      const VIP_AFTER_3DAY = levelCaseFor("(c.total_deposit + t3.amt)");
+
       const cohortCountRow = await env.daily_records_db
-        .prepare(
-          `SELECT COUNT(*) as c FROM (
-             SELECT total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-             FROM users WHERE total_deposit IS NOT NULL
-           ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
-             AND (next_level_min - total_deposit) BETWEEN 1 AND ?`
-        )
-        .bind(minLevel, maxLevel, maxGap)
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+        .bind(...cteArgs)
         .first<{ c: number }>();
       const cohortSize = cohortCountRow?.c ?? 0;
 
-      const todayDeposits = await env.daily_records_db
-        .prepare(`SELECT user_id, SUM(amount) as day_deposit FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
-        .bind(anchorDate)
-        .all<{ user_id: number; day_deposit: number }>();
-      const threeDayDeposits = await env.daily_records_db
-        .prepare(`SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
-        .bind(threeDaysAgoStr, anchorDate)
-        .all<{ user_id: number; amt: number }>();
+      const upgradedTodayCountRow = await env.daily_records_db
+        .prepare(
+          `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+           WHERE ${VIP_AFTER_TODAY} > c.current_level`
+        )
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const upgradedTodayCount = upgradedTodayCountRow?.c ?? 0;
 
-      const todayDepositByUser: Record<number, number> = {};
-      todayDeposits.results.forEach((r) => { todayDepositByUser[r.user_id] = r.day_deposit; });
-      const threeDayDepositByUser: Record<number, number> = {};
-      threeDayDeposits.results.forEach((r) => { threeDayDepositByUser[r.user_id] = r.amt; });
-      const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...Object.keys(threeDayDepositByUser).map(Number)]));
+      const upgraded3DayRow = await env.daily_records_db
+        .prepare(
+          `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t3 ON t3.user_id = c.user_id
+           WHERE ${VIP_AFTER_3DAY} > c.current_level`
+        )
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const upgraded3DayCount = upgraded3DayRow?.c ?? 0;
 
-      type MasterRow = { user_id: number; total_deposit: number; current_level: number; next_level_min: number | null; agent: string | null };
-      let masterRows: MasterRow[] = [];
-      for (let i = 0; i < candidateIds.length; i += 90) {
-        const chunk = candidateIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.daily_records_db
-          .prepare(
-            `SELECT user_id, total_deposit, assigned_agent as agent, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-             FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
-          )
-          .bind(...chunk)
-          .all<MasterRow>();
-        masterRows = masterRows.concat(res.results);
-      }
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level as vip_before,
+                  ${VIP_AFTER_TODAY} as vip_after, t.day_deposit,
+                  (c.total_deposit + t.day_deposit) - c.next_level_min as amount_over_minimum
+           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+           WHERE ${VIP_AFTER_TODAY} > c.current_level
+           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
 
-      const vipLevel = (totalDeposit: number): number => {
-        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
-        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
-        return 14;
-      };
-
-      const cohortMembers = masterRows.filter(
-        (r) => r.next_level_min !== null && r.current_level >= minLevel && r.current_level <= maxLevel &&
-          (r.next_level_min - r.total_deposit) >= 1 && (r.next_level_min - r.total_deposit) <= maxGap
-      );
-
-      const upgradedTodayRows = cohortMembers
-        .filter((r) => todayDepositByUser[r.user_id] !== undefined)
-        .map((r) => {
-          const dayDeposit = todayDepositByUser[r.user_id];
-          const totalAfter = r.total_deposit + dayDeposit;
-          const vipAfter = vipLevel(totalAfter);
-          return { r, dayDeposit, totalAfter, vipAfter };
-        })
-        .filter(({ vipAfter, r }) => vipAfter > r.current_level)
-        .map(({ r, dayDeposit, totalAfter, vipAfter }) => ({
-          user_id: r.user_id,
-          agent: r.agent || "Unassigned",
-          vip_before: r.current_level,
-          vip_after: vipAfter,
-          day_deposit: dayDeposit,
-          amount_over_minimum: totalAfter - (r.next_level_min as number),
-        }))
-        .sort((a, b) => b.day_deposit - a.day_deposit);
-
-      const upgraded3DayCount = cohortMembers.filter((r) => {
-        const amt = threeDayDepositByUser[r.user_id];
-        if (amt === undefined) return false;
-        return vipLevel(r.total_deposit + amt) > r.current_level;
-      }).length;
-
-      const total = upgradedTodayRows.length;
-      const start = (page - 1) * pageSize;
       return Response.json({
         date: anchorDate,
         tier,
         page,
         pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: upgradedTodayRows.slice(start, start + pageSize),
+        total: upgradedTodayCount,
+        totalPages: Math.max(1, Math.ceil(upgradedTodayCount / pageSize)),
+        rows: rows.results,
         cohortSize,
-        upgradedTodayCount: total,
+        upgradedTodayCount,
         upgraded3DayCount,
       });
     }
@@ -1205,63 +1121,52 @@ export default {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       const yesterdayStr = yesterday.toISOString().slice(0, 10);
 
-      const firstDeposits = await env.daily_records_db
+      const CTE = `WITH cohort AS (
+          SELECT user_id, MIN(region) as region FROM deposits
+          WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        today_dep AS (
+          SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
+          FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        )`;
+      const cteArgs = [yesterdayStr, anchorDate];
+
+      const cohortCountRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const cohortSize = cohortCountRow?.c ?? 0;
+
+      const retainedAggRow = await env.daily_records_db
         .prepare(
-          `SELECT user_id, MIN(region) as region FROM deposits
-           WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL GROUP BY user_id`
+          `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
+           FROM cohort c JOIN today_dep t ON t.user_id = c.user_id`
         )
-        .bind(yesterdayStr)
-        .all<{ user_id: number; region: string | null }>();
-      const cohortIds = firstDeposits.results.map((r) => r.user_id);
-      const regionByUser: Record<number, string | null> = {};
-      firstDeposits.results.forEach((r) => { regionByUser[r.user_id] = r.region; });
+        .bind(...cteArgs)
+        .first<{ c: number; total_deposit: number }>();
+      const retainedCount = retainedAggRow?.c ?? 0;
+      const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
 
-      const todayAgg = await env.daily_records_db
+      const rows = await env.daily_records_db
         .prepare(
-          `SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`
+          `${CTE}
+           SELECT c.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                  t.day_deposit, t.deposit_count,
+                  COALESCE(u.city, c.region, 'Unknown') as region
+           FROM cohort c JOIN today_dep t ON t.user_id = c.user_id
+           LEFT JOIN users u ON u.user_id = c.user_id
+           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
         )
-        .bind(anchorDate)
-        .all<{ user_id: number; day_deposit: number; deposit_count: number }>();
-      const todayByUser: Record<number, { day_deposit: number; deposit_count: number }> = {};
-      todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
 
-      const cityByUser: Record<number, string | null> = {};
-      const agentByUser: Record<number, string | null> = {};
-      for (let i = 0; i < cohortIds.length; i += 90) {
-        const chunk = cohortIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.daily_records_db
-          .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
-          .bind(...chunk)
-          .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
-        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; agentByUser[r.user_id] = r.assigned_agent; });
-      }
-
-      const retainedRows = cohortIds
-        .filter((uid) => todayByUser[uid] !== undefined)
-        .map((uid) => ({
-          user_id: uid,
-          agent: agentByUser[uid] || "Unassigned",
-          day_deposit: todayByUser[uid].day_deposit,
-          deposit_count: todayByUser[uid].deposit_count,
-          region: cityByUser[uid] || regionByUser[uid] || "Unknown",
-        }))
-        .sort((a, b) => b.day_deposit - a.day_deposit);
-
-      const cohortSize = cohortIds.length;
-      const retainedCount = retainedRows.length;
-      const avgDeposit = retainedCount > 0 ? retainedRows.reduce((s, r) => s + r.day_deposit, 0) / retainedCount : 0;
-
-      const total = retainedRows.length;
-      const start = (page - 1) * pageSize;
       return Response.json({
         date: anchorDate,
         page,
         pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: retainedRows.slice(start, start + pageSize),
+        total: retainedCount,
+        totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
+        rows: rows.results,
         cohortSize,
         retainedCount,
         avgDeposit,
@@ -1290,62 +1195,54 @@ export default {
         WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
         WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
 
+      const CTE = `WITH cohort AS (
+          SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level
+          FROM users WHERE total_deposit IS NOT NULL
+        ),
+        cohort_filtered AS (
+          SELECT * FROM cohort WHERE current_level BETWEEN ? AND ?
+        ),
+        today_dep AS (
+          SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
+          FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        )`;
+      const cteArgs = [minLevel, maxLevel, anchorDate];
+
       const cohortCountRow = await env.daily_records_db
-        .prepare(
-          `SELECT COUNT(*) as c FROM (SELECT ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL)
-           WHERE current_level BETWEEN ? AND ?`
-        )
-        .bind(minLevel, maxLevel)
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+        .bind(...cteArgs)
         .first<{ c: number }>();
       const cohortSize = cohortCountRow?.c ?? 0;
 
-      const todayAgg = await env.daily_records_db
+      const retainedAggRow = await env.daily_records_db
         .prepare(
-          `SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`
+          `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
+           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`
         )
-        .bind(anchorDate)
-        .all<{ user_id: number; day_deposit: number; deposit_count: number }>();
-      const todayIds = todayAgg.results.map((r) => r.user_id);
-      const todayByUser: Record<number, { day_deposit: number; deposit_count: number }> = {};
-      todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
+        .bind(...cteArgs)
+        .first<{ c: number; total_deposit: number }>();
+      const retainedCount = retainedAggRow?.c ?? 0;
+      const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
 
-      type MasterRow = { user_id: number; current_level: number; agent: string | null };
-      let masterRows: MasterRow[] = [];
-      for (let i = 0; i < todayIds.length; i += 90) {
-        const chunk = todayIds.slice(i, i + 90);
-        const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.daily_records_db
-          .prepare(`SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
-          .bind(...chunk)
-          .all<MasterRow>();
-        masterRows = masterRows.concat(res.results);
-      }
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level,
+                  t.day_deposit, t.deposit_count
+           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
 
-      const matchedRows = masterRows
-        .filter((r) => r.current_level >= minLevel && r.current_level <= maxLevel)
-        .map((r) => ({
-          user_id: r.user_id,
-          agent: r.agent || "Unassigned",
-          current_level: r.current_level,
-          day_deposit: todayByUser[r.user_id].day_deposit,
-          deposit_count: todayByUser[r.user_id].deposit_count,
-        }))
-        .sort((a, b) => b.day_deposit - a.day_deposit);
-
-      const retainedCount = matchedRows.length;
-      const avgDeposit = retainedCount > 0 ? matchedRows.reduce((s, r) => s + r.day_deposit, 0) / retainedCount : 0;
-
-      const total = matchedRows.length;
-      const start = (page - 1) * pageSize;
       return Response.json({
         date: anchorDate,
         tier,
         page,
         pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: matchedRows.slice(start, start + pageSize),
+        total: retainedCount,
+        totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
+        rows: rows.results,
         cohortSize,
         retainedCount,
         avgDeposit,
