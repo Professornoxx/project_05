@@ -1,6 +1,6 @@
 import type { Env } from "./lib/types";
 import { runFullSync, syncSource } from "./lib/sync";
-import { handleMasterUpload } from "./lib/upload";
+import { handleMasterUpload, handleAgentUpload } from "./lib/upload";
 import { setBearerToken, setExportUrl, getAllExportUrls } from "./lib/config";
 import { CONFIG_PAGE_HTML } from "./lib/configPage";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
@@ -1476,6 +1476,23 @@ export default {
       // timeout for the client's HTTP request.
       ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
       return Response.json({ upload: uploadResult, syncTriggered: "started — check /api/sync/status for results" });
+    }
+
+    // Agent-assignment upload: a wide matrix (one column per agent, cells
+    // are user_ids) rather than the master upload's row-per-user shape —
+    // see handleAgentUpload's comment. No sync trigger needed afterward,
+    // this only touches users.assigned_agent, nothing export-related.
+    if (url.pathname === "/api/config/upload-agents" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "config");
+      if (authFail) return authFail;
+      const form = await request.formData();
+      const file = form.get("file") as File | null;
+      if (file === null || typeof file.arrayBuffer !== "function") {
+        return Response.json({ error: "missing file field" }, { status: 400 });
+      }
+      const buffer = await file.arrayBuffer();
+      const uploadResult = await handleAgentUpload(buffer, env, file.name);
+      return Response.json({ upload: uploadResult });
     }
 
     return new Response("Not Found", { status: 404 });
