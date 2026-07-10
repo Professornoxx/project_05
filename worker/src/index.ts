@@ -1415,12 +1415,20 @@ export default {
           return agents[agent];
         };
 
-        // Reactivation (low/high): denominator = agent's currently-inactive
-        // cohort (GROUP BY, cheap); numerator = of those, who deposited
-        // anywhere in [start,end].
-        for (const [key, minLevel, maxLevel, minDays, maxDays] of [
-          ["reactivationLow", 2, 4, 10, 180], ["reactivationHigh", 5, 14, 15, 240],
-        ] as [keyof AgentKPIs, number, number, number, number][]) {
+        // Number of calendar days in [start,end] inclusive — used to scale
+        // the fixed daily targets below ("30 per day" over a 7-day range
+        // means a 210 target, not literally 30).
+        const days = Math.round((new Date(end + "T00:00:00Z").getTime() - new Date(start + "T00:00:00Z").getTime()) / 86400000) + 1;
+
+        // Reactivation (low/high): fixed daily target (30/10), scaled by
+        // the number of days in range — NOT a ratio against cohort size.
+        // The cohort query below is only used to tell "agent genuinely has
+        // zero users in this bracket" (stays den=0, shown as "no users
+        // assigned") apart from "agent has users but hit 0 reactivations"
+        // (den=target, num=0, shown as 0/target Not Achieved).
+        for (const [key, minLevel, maxLevel, minDays, maxDays, target] of [
+          ["reactivationLow", 2, 4, 10, 180, 30], ["reactivationHigh", 5, 14, 15, 240, 10],
+        ] as [keyof AgentKPIs, number, number, number, number, number][]) {
           const denRows = await env.master_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1431,7 +1439,7 @@ export default {
             )
             .bind(minLevel, maxLevel, minDays, maxDays)
             .all<{ agent: string; c: number }>();
-          denRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
+          denRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
           const rangeDepositors = await env.daily_records_db
             .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
@@ -1457,12 +1465,13 @@ export default {
           }
         }
 
-        // VIP Upgrade (low/high): denominator = agent's near-upgrade cohort
-        // (current state); numerator = of those, whose baseline total_deposit
-        // + their deposits across [start,end] crosses the next bracket.
-        for (const [key, minLevel, maxLevel, maxGap] of [
-          ["vipUpgradeLow", 2, 4, 1000], ["vipUpgradeHigh", 5, 13, 50000],
-        ] as [keyof AgentKPIs, number, number, number][]) {
+        // VIP Upgrade (low/high): fixed daily target (10/5), scaled by days
+        // in range — NOT a ratio against near-upgrade cohort size. Same
+        // "cohort presence decides no-users-assigned, target decides the
+        // displayed denominator" split as Reactivation above.
+        for (const [key, minLevel, maxLevel, maxGap, target] of [
+          ["vipUpgradeLow", 2, 4, 1000, 10], ["vipUpgradeHigh", 5, 13, 50000, 5],
+        ] as [keyof AgentKPIs, number, number, number, number][]) {
           const cohortRows = await env.master_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1473,7 +1482,7 @@ export default {
             )
             .bind(minLevel, maxLevel, maxGap)
             .all<{ agent: string; c: number }>();
-          cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
+          cohortRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
           const rangeDeposits = await env.daily_records_db
             .prepare(`SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)

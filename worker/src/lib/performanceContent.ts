@@ -103,6 +103,18 @@ function pfColorForPct(pct) {
   return pct >= 100 ? '#15803d' : pct >= 60 ? '#b45309' : '#b91c1c';
 }
 
+// Count-target KPIs (reactivation, VIP upgrade): achieved = num >= den,
+// where den is already the (target x days-in-range) figure from the
+// backend, not a cohort size. Rate-target KPIs (premium active) use their
+// own fixed percentage threshold instead of the count comparison.
+const PF_RATE_THRESHOLDS = { premiumActiveLow: 30, premiumActiveHigh: 40 };
+function pfIsCountTarget(key) { return key !== 'premiumActiveLow' && key !== 'premiumActiveHigh' && key !== 'retention'; }
+function pfAchieved(key, kpi, pct) {
+  if (key in PF_RATE_THRESHOLDS) return pct !== null && pct >= PF_RATE_THRESHOLDS[key];
+  if (pfIsCountTarget(key)) return kpi.num >= kpi.den;
+  return null; // retention: no target defined, informational only
+}
+
 function pfRenderCards(leaderboard, monthRange) {
   document.getElementById('pfMonthRange').textContent = monthRange || '—';
   const order = [1, 0, 2]; // rank2, rank1, rank3 visual order (gold in middle)
@@ -133,14 +145,17 @@ function pfRenderRows(dailyTable) {
       if (kpi.den === 0) {
         return '<div class="pf-kpi-cell"><div class="pf-kpi-label">' + label + '</div><div class="pf-kpi-value na">No users assigned</div></div>';
       }
-      const color = pfColorForPct(pct);
-      const barPct = Math.min(100, pct);
+      const achieved = pfAchieved(key, kpi, pct);
+      const color = achieved === null ? pfColorForPct(pct) : (achieved ? '#15803d' : '#b91c1c');
+      const barPct = Math.min(100, key in PF_RATE_THRESHOLDS ? pct : (kpi.den > 0 ? (kpi.num / kpi.den) * 100 : 0));
       let valueText = pfFmtNum(kpi.num) + ' / ' + pfFmtNum(kpi.den);
-      if (key === 'premiumActiveLow' || key === 'premiumActiveHigh') valueText += ' (' + pct.toFixed(1) + '%)';
+      if (key in PF_RATE_THRESHOLDS) valueText += ' (' + pct.toFixed(1) + '%)';
+      const achievedTag = achieved === null ? '' : '<div style="font-size:9px;font-weight:700;color:' + color + ';margin-top:2px;">' + (achieved ? 'Achieved' : 'Not Achieved') + '</div>';
       return '<div class="pf-kpi-cell">' +
         '<div class="pf-kpi-label">' + label + '</div>' +
         '<div class="pf-kpi-value" style="color:' + color + '">' + valueText + '</div>' +
         '<div class="pf-kpi-bar-track"><div class="pf-kpi-bar-fill" style="width:' + barPct + '%;background:' + color + '"></div></div>' +
+        achievedTag +
         '</div>';
     }).join('');
     const scoreColor = pfColorForPct(row.score);
