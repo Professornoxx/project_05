@@ -1340,28 +1340,21 @@ export default {
             .all<{ agent: string; c: number }>();
           denRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
-          const rangeDepositors = await env.daily_records_db
-            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
-            .bind(start, end)
-            .all<{ user_id: number }>();
-          const ids = rangeDepositors.results.map((r) => r.user_id);
-          for (let i = 0; i < ids.length; i += 90) {
-            const chunk = ids.slice(i, i + 90);
-            const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.daily_records_db
-              .prepare(
-                `SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level,
-                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-                 FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL AND last_active_time IS NOT NULL`
-              )
-              .bind(...chunk)
-              .all<{ agent: string; current_level: number; inactive_days: number }>();
-            res.results.forEach((r) => {
-              if (r.current_level >= minLevel && r.current_level <= maxLevel && r.inactive_days >= minDays && r.inactive_days <= maxDays) {
-                ensure(r.agent)[key].num++;
-              }
-            });
-          }
+          const numRows = await env.daily_records_db
+            .prepare(
+              `WITH range_depositors AS (
+                 SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+               )
+               SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, COUNT(*) as c
+               FROM users u JOIN range_depositors d ON d.user_id = u.user_id
+               WHERE u.total_deposit IS NOT NULL AND u.last_active_time IS NOT NULL
+                 AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
+                 AND CAST((julianday('now') - julianday(u.last_active_time)) AS INTEGER) BETWEEN ? AND ?
+               GROUP BY agent`
+            )
+            .bind(start, end, minLevel, maxLevel, minDays, maxDays)
+            .all<{ agent: string; c: number }>();
+          numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
 
         // VIP Upgrade (low/high): fixed daily target (10/5), scaled by days
@@ -1383,32 +1376,25 @@ export default {
             .all<{ agent: string; c: number }>();
           cohortRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
-          const rangeDeposits = await env.daily_records_db
-            .prepare(`SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
-            .bind(start, end)
-            .all<{ user_id: number; amt: number }>();
-          const depositByUser: Record<number, number> = {};
-          rangeDeposits.results.forEach((r) => { depositByUser[r.user_id] = r.amt; });
-          const ids = rangeDeposits.results.map((r) => r.user_id);
-          for (let i = 0; i < ids.length; i += 90) {
-            const chunk = ids.slice(i, i + 90);
-            const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.daily_records_db
-              .prepare(
-                `SELECT COALESCE(assigned_agent,'Unassigned') as agent, user_id, total_deposit,
-                        ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-                 FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
-              )
-              .bind(...chunk)
-              .all<{ agent: string; user_id: number; total_deposit: number; current_level: number; next_level_min: number | null }>();
-            res.results.forEach((r) => {
-              if (r.next_level_min === null) return;
-              const gap = r.next_level_min - r.total_deposit;
-              if (r.current_level < minLevel || r.current_level > maxLevel || gap < 1 || gap > maxGap) return;
-              const totalAfter = r.total_deposit + (depositByUser[r.user_id] ?? 0);
-              if (vipLevel(totalAfter) > r.current_level) ensure(r.agent)[key].num++;
-            });
-          }
+          const numRows = await env.daily_records_db
+            .prepare(
+              `WITH range_deposits AS (
+                 SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+               )
+               SELECT agent, COUNT(*) as c FROM (
+                 SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, u.total_deposit,
+                        ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} as current_level,
+                        ${NEXT_LEVEL_MIN.replace(/total_deposit/g, "u.total_deposit")} as next_level_min,
+                        ${CURRENT_LEVEL.replace(/total_deposit/g, "(u.total_deposit + d.amt)")} as vip_after
+                 FROM users u JOIN range_deposits d ON d.user_id = u.user_id
+                 WHERE u.total_deposit IS NOT NULL
+               ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+                 AND (next_level_min - total_deposit) BETWEEN 1 AND ? AND vip_after > current_level
+               GROUP BY agent`
+            )
+            .bind(start, end, minLevel, maxLevel, maxGap)
+            .all<{ agent: string; c: number }>();
+          numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
 
         // Premium Active (low/high): denominator = agent's total population
@@ -1427,22 +1413,20 @@ export default {
             .all<{ agent: string; c: number }>();
           cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
 
-          const rangeDepositors = await env.daily_records_db
-            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
-            .bind(start, end)
-            .all<{ user_id: number }>();
-          const ids = rangeDepositors.results.map((r) => r.user_id);
-          for (let i = 0; i < ids.length; i += 90) {
-            const chunk = ids.slice(i, i + 90);
-            const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.daily_records_db
-              .prepare(`SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
-              .bind(...chunk)
-              .all<{ agent: string; current_level: number }>();
-            res.results.forEach((r) => {
-              if (r.current_level >= minLevel && r.current_level <= maxLevel) ensure(r.agent)[key].num++;
-            });
-          }
+          const numRows = await env.daily_records_db
+            .prepare(
+              `WITH range_depositors AS (
+                 SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+               )
+               SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, COUNT(*) as c
+               FROM users u JOIN range_depositors d ON d.user_id = u.user_id
+               WHERE u.total_deposit IS NOT NULL
+                 AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
+               GROUP BY agent`
+            )
+            .bind(start, end, minLevel, maxLevel)
+            .all<{ agent: string; c: number }>();
+          numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
 
         // Retention: no VIP split. The cohort ("yesterday's first-deposit
@@ -1458,36 +1442,29 @@ export default {
           const cohortWindowEnd = (() => {
             const d = new Date(end + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10);
           })();
-          const [firstDepositRows, depositDayRows] = await Promise.all([
-            env.daily_records_db
-              .prepare(`SELECT DISTINCT user_id, date(create_time) as cohort_day FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL`)
-              .bind(cohortWindowStart, cohortWindowEnd)
-              .all<{ user_id: number; cohort_day: string }>(),
-            env.daily_records_db
-              .prepare(`SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
-              .bind(start, end)
-              .all<{ user_id: number; dep_day: string }>(),
-          ]);
-          const depositedOnDay = new Set(depositDayRows.results.map((r) => r.user_id + "|" + r.dep_day));
-          const cohortUserIds = Array.from(new Set(firstDepositRows.results.map((r) => r.user_id)));
-          const retentionAgentByUser: Record<number, string> = {};
-          for (let i = 0; i < cohortUserIds.length; i += 90) {
-            const chunk = cohortUserIds.slice(i, i + 90);
-            const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.daily_records_db
-              .prepare(`SELECT user_id, COALESCE(assigned_agent,'Unassigned') as agent FROM users WHERE user_id IN (${placeholders})`)
-              .bind(...chunk)
-              .all<{ user_id: number; agent: string }>();
-            res.results.forEach((r) => { retentionAgentByUser[r.user_id] = r.agent; });
-          }
-          firstDepositRows.results.forEach((r) => {
-            const agent = retentionAgentByUser[r.user_id];
-            if (!agent) return;
-            const nextDay = new Date(r.cohort_day + "T00:00:00Z");
-            nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-            const nextDayStr = nextDay.toISOString().slice(0, 10);
-            ensure(agent).retention.den++;
-            if (depositedOnDay.has(r.user_id + "|" + nextDayStr)) ensure(agent).retention.num++;
+          const retentionRows = await env.daily_records_db
+            .prepare(
+              `WITH first_deposits AS (
+                 SELECT DISTINCT user_id, date(create_time) as cohort_day FROM deposits
+                 WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+               ),
+               deposit_days AS (
+                 SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits
+                 WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+               )
+               SELECT COALESCE(u.assigned_agent,'Unassigned') as agent,
+                      COUNT(*) as den,
+                      SUM(CASE WHEN dd.user_id IS NOT NULL THEN 1 ELSE 0 END) as num
+               FROM first_deposits fd
+               JOIN users u ON u.user_id = fd.user_id
+               LEFT JOIN deposit_days dd ON dd.user_id = fd.user_id AND dd.dep_day = date(fd.cohort_day, '+1 day')
+               GROUP BY agent`
+            )
+            .bind(cohortWindowStart, cohortWindowEnd, start, end)
+            .all<{ agent: string; den: number; num: number }>();
+          retentionRows.results.forEach((r) => {
+            ensure(r.agent).retention.den += r.den;
+            ensure(r.agent).retention.num += r.num;
           });
         })();
 
