@@ -18,7 +18,8 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
-      MASTER_DB_ID: ${{ secrets.MASTER_DB_ID }}
+      # MASTER_DB_ID removed: master-db and daily-records-db are merged into
+      # one database (daily-records-db) — see sync_engine.py's comment.
       DAILY_DB_ID: ${{ secrets.DAILY_DB_ID }}
       PACKAGE_ID: "10"
       SYNC_WINDOW_DAYS: "5"

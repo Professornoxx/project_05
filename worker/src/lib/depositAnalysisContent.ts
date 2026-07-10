@@ -80,11 +80,11 @@ function byRangeOrder(rows) {
   return RANGE_ORDER.map((r) => map[r] || { range: r, count: 0, users: 0, total: 0, total_amt: 0 });
 }
 
-async function loadDepositAnalysis() {
+async function loadDepositAnalysis(date) {
   const statusEl = document.getElementById('daStatus');
   statusEl.textContent = 'Loading...';
   try {
-    const res = await fetch('/api/dashboard/deposit-analysis');
+    const res = await fetch('/api/dashboard/deposit-analysis' + (date ? '?date=' + date : ''));
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
 
@@ -130,6 +130,9 @@ function downloadCsv(tableEl, filename) {
 document.getElementById('exportAmountRangeBtn').onclick = () => downloadCsv(document.getElementById('amountRangeTable'), 'amount-range.csv');
 document.getElementById('exportChannelBtn').onclick = () => downloadCsv(document.getElementById('channelTable'), 'deposit-by-channel.csv');
 
+// Exposed so the Home page's day picker (loaded after this script) can
+// re-trigger this section when the selected date changes.
+window.loadDepositAnalysis = loadDepositAnalysis;
 loadDepositAnalysis();
 </script>
 `;

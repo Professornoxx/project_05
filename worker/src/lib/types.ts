@@ -1,6 +1,10 @@
 export interface Env {
-  master_db: D1Database; // users only
-  daily_records_db: D1Database; // deposits, withdrawals, wallet_details, sync_runs — 35-day retention
+  // Merged database: users (permanent) + deposits/withdrawals/
+  // wallet_details/sync_runs (35-day rolling retention). Was two separate
+  // D1 databases (master_db + daily_records_db) until this migration —
+  // kept this binding's name since it's referenced throughout the
+  // codebase, even though "daily records" no longer fully describes it.
+  daily_records_db: D1Database;
   SYNC_KV: KVNamespace;
   UPLOADS?: R2Bucket;
   BEARER_TOKEN: string;

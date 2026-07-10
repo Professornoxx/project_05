@@ -5,12 +5,12 @@
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Merged database: daily-records-db now also holds the users table
+  // (migrated from the former master-db via `wrangler d1 export` +
+  // `wrangler d1 execute --file`, verified live — 55,079 rows, exact
+  // match). master-db itself is left alone (not deleted) as a rollback
+  // safety net until this migration is fully verified in production.
   "d1_databases": [
-    {
-      "binding": "master_db",
-      "database_name": "master-db",
-      "database_id": "b09ac792-edf4-4819-b4d8-9a1389e12531"
-    },
     {
       "binding": "daily_records_db",
       "database_name": "daily-records-db",

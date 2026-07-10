@@ -1,7 +1,7 @@
 import type { Env, SourceName, SyncResult } from "./types";
 import { fetchExportRows } from "./exportClient";
 import { upsertRowsChunked, tableForSource } from "./chunkedUpsert";
-import { updateMasterAggregatesForUsers } from "./aggregate";
+import { updateMasterAggregatesForUsers, updateMasterProfilesForUsers } from "./aggregate";
 
 const SOURCES: Exclude<SourceName, "manual_upload">[] = ["wallet", "deposit", "withdraw"];
 
@@ -46,6 +46,12 @@ export async function syncSource(source: Exclude<SourceName, "manual_upload">, e
       const table = source === "deposit" ? "deposits" : "withdrawals";
       await updateMasterAggregatesForUsers(env, table, userIds);
     }
+
+    // Same profile fields the Python ETL keeps current (phone/mark/
+    // member_level/user_balance) — see updateMasterProfilesForUsers for
+    // the full reasoning. Runs for all 3 sources, not just deposit/
+    // withdraw, since wallet is the only source with a balance field.
+    await updateMasterProfilesForUsers(env, rows, source);
 
     await logRun(env, source, startedAt, { status: "success", upserted });
     return { source, fetched, missing_found: missingBefore, upserted, status: "success" };

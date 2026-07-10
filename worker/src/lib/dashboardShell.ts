@@ -92,6 +92,11 @@ export function renderDashboardShell(activeKey: string, pageTitle: string, conte
     color: #666;
     text-decoration: none;
   }
+  .header-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .last-sync { font-size: 12px; padding: 6px 12px; border-radius: 16px; display: inline-flex; align-items: center; gap: 6px; }
+  .last-sync.fresh { background: #dcfce7; color: #15803d; }
+  .last-sync.stale { background: #fee2e2; color: #b91c1c; }
+  .last-sync.loading { background: #f1f5f9; color: #64748b; }
 </style>
 </head>
 <body>
@@ -100,7 +105,10 @@ export function renderDashboardShell(activeKey: string, pageTitle: string, conte
   <a href="#" class="logout" id="logoutLink">Log out</a>
 </div>
 <div class="main">
-  <h1>${pageTitle}</h1>
+  <div class="header-row">
+    <h1>${pageTitle}</h1>
+    <span class="last-sync loading" id="lastSyncBadge">Checking data freshness…</span>
+  </div>
   ${contentHtml}
 </div>
 <script>
@@ -109,6 +117,41 @@ document.getElementById('logoutLink').onclick = async (e) => {
   await fetch('/logout', { method: 'POST' });
   location.href = '/login';
 };
+
+// Real last-successful-sync time per source, not the browser's render
+// time — see /api/dashboard/last-sync for why this exists (an 8hr token
+// outage previously went unnoticed because per-section "Updated HH:MM:SS"
+// text only ever showed the current time, regardless of data freshness).
+(async () => {
+  const badge = document.getElementById('lastSyncBadge');
+  try {
+    const res = await fetch('/api/dashboard/last-sync');
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    const bySource = {};
+    (d.bySource || []).forEach((r) => { bySource[r.source] = r.last_success; });
+    const timestamps = Object.values(bySource).filter(Boolean).map((t) => new Date(t).getTime());
+    if (timestamps.length === 0) {
+      badge.textContent = 'No successful sync yet';
+      badge.className = 'last-sync stale';
+      return;
+    }
+    const oldestSuccess = Math.min(...timestamps);
+    const ageMinutes = (Date.now() - oldestSuccess) / 60000;
+
+    const failureIsNewer = d.recentFailure && bySource[d.recentFailure.source] &&
+      new Date(d.recentFailure.started_at).getTime() > new Date(bySource[d.recentFailure.source]).getTime();
+
+    const fmtAge = (m) => m < 60 ? Math.round(m) + 'm ago' : (m / 60).toFixed(1) + 'h ago';
+    const isStale = ageMinutes > 90 || failureIsNewer;
+    badge.textContent = 'Data last synced: ' + fmtAge(ageMinutes) + (failureIsNewer ? ' (' + d.recentFailure.source + ' sync currently failing)' : '');
+    badge.className = 'last-sync ' + (isStale ? 'stale' : 'fresh');
+  } catch (e) {
+    badge.textContent = 'Sync status unavailable';
+    badge.className = 'last-sync stale';
+  }
+})();
 </script>
 </body>
 </html>`;

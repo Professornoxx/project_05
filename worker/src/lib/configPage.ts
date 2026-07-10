@@ -55,6 +55,15 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
   <div class="status" id="uploadStatus"></div>
 </section>
 
+<section>
+  <h2>Agent Assignments</h2>
+  <p style="font-size:13px;color:#555;margin-top:0;">One column per agent (header = agent display name), each cell a user_id assigned to them.</p>
+  <label for="agentFileInput">Excel file (.xlsx)</label>
+  <input type="file" id="agentFileInput" accept=".xlsx,.xls" />
+  <button id="agentUploadBtn">Upload Agent Assignments</button>
+  <div class="status" id="agentUploadStatus"></div>
+</section>
+
 <script>
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
@@ -146,6 +155,26 @@ document.getElementById('uploadBtn').onclick = async () => {
     const form = new FormData();
     form.append('file', file);
     const res = await fetch('/api/config/upload', { method: 'POST', body: form });
+    const data = await readJsonSafely(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    statusEl.textContent = 'Imported. ' + JSON.stringify(data);
+    statusEl.className = 'status ok';
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+};
+
+document.getElementById('agentUploadBtn').onclick = async () => {
+  const statusEl = document.getElementById('agentUploadStatus');
+  const file = document.getElementById('agentFileInput').files[0];
+  if (!file) { statusEl.textContent = 'Choose a file first.'; statusEl.className = 'status err'; return; }
+  statusEl.textContent = 'Uploading...';
+  statusEl.className = 'status';
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch('/api/config/upload-agents', { method: 'POST', body: form });
     const data = await readJsonSafely(res);
     if (!res.ok) throw new Error(data.error || res.statusText);
     statusEl.textContent = 'Imported. ' + JSON.stringify(data);

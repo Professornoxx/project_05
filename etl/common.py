@@ -26,12 +26,61 @@ STATUS_FIELD_CANDIDATES = [
 ]
 TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"]
 # "pay channel" (with space) carries values like "Pay Center-coinsPay" —
-# confirmed against real deposit export data; "channel"/"appChannel" are
-# fallbacks for sources that don't use that exact field name.
-CHANNEL_FIELD_CANDIDATES = ["pay channel", "channel", "appChannel", "Channel Order ID", "渠道"]
+# confirmed against real deposit export data; "Withdraw Payment Channels" is
+# the withdraw export's equivalent field (confirmed against real withdraw
+# export headers) and must come before "Channel Order ID", which looks like
+# a channel name but is actually an unrelated order-ID column that withdraw
+# rows also happen to have. "channel"/"appChannel" are generic fallbacks.
+CHANNEL_FIELD_CANDIDATES = [
+    "pay channel", "Withdraw Payment Channels", "channel", "appChannel", "Channel Order ID", "渠道",
+]
 # "resultDate" is when a deposit order actually completed (vs. createTime,
 # when it was initiated) — confirmed present in real deposit export data.
 RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "update_time"]
+# withdraw-only: "reviewTime" marks the under-review -> processing transition
+# (status 0->1), "callbackTime" marks the payment-provider completion
+# callback (status 1->2) — both confirmed present in real withdraw export
+# headers, used for the Withdrawal Analysis processing/completion-time and
+# aging panels.
+REVIEW_TIME_FIELD_CANDIDATES = ["reviewTime", "review_time"]
+CALLBACK_TIME_FIELD_CANDIDATES = ["callbackTime", "callback_time"]
+# deposit-only: "是否是首充，0不是首充，1是首充" (is-first-deposit, 0=no/1=yes) and
+# "RegisterCity" (the user's registered city) — both confirmed present in
+# real deposit export headers, used by Action Center's "New Users & Bonuses"
+# section to flag genuinely-new depositors and show where they're from.
+FIRST_DEPOSIT_FIELD_CANDIDATES = ["是否是首充，0不是首充，1是首充", "is_first_deposit"]
+REGION_FIELD_CANDIDATES = ["RegisterCity", "region"]
+# Master-db profile fields incidentally present on the transaction exports —
+# used to auto-update master_db.users from the deposit/withdraw/wallet syncs
+# instead of requiring a dedicated user-list export (none was found to
+# exist). Deliberately narrow: only fields with an unambiguous 1:1 meaning
+# match to an existing master_db.users column. Two things confirmed absent
+# on purpose:
+#   - "createTime": master_db.users.create_time is a generic record-touched
+#     timestamp already populated by manual uploads, not a registration
+#     date — reusing a row's createTime for it would be a category
+#     mismatch, not a real update.
+#   - "RegisterCity"/"cfIpRegisterCity": confirmed live against a real
+#     existing user that master_db.city holds STATE-level values ("Tamil
+#     Nadu" — what the Analytics "Top 10 Regions" chart relies on) while
+#     these export fields are CITY-level ("Alīgarh") — different
+#     granularity, not alternate sources for the same value. Auto-syncing
+#     this would silently corrupt the state-level convention every other
+#     region-based report already depends on. deposits.region already
+#     captures the city-level value separately and correctly.
+USER_PHONE_FIELD_CANDIDATES = ["userPhone", "UserPhone"]
+USER_MARK_FIELD_CANDIDATES = ["mark"]
+MEMBER_LEVEL_FIELD_CANDIDATES = ["memberLevel"]
+WALLET_BALANCE_FIELD_CANDIDATES = ["changeAfter"]
+
+
+def extract_user_profile_fields(row: dict) -> dict:
+    return {
+        "phone": _coerce(_pick(row, USER_PHONE_FIELD_CANDIDATES)),
+        "mark": _coerce(_pick(row, USER_MARK_FIELD_CANDIDATES)),
+        "member_level": _coerce(_pick(row, MEMBER_LEVEL_FIELD_CANDIDATES)),
+        "wallet_balance": _coerce(_pick(row, WALLET_BALANCE_FIELD_CANDIDATES)),
+    }
 
 
 def _pick(row: dict, candidates: list[str]):
@@ -80,6 +129,10 @@ def extract_common_fields(row: dict) -> dict:
         "create_time": _coerce(_pick(row, TIME_FIELD_CANDIDATES)),
         "channel": _coerce(_pick(row, CHANNEL_FIELD_CANDIDATES)),
         "result_time": _coerce(_pick(row, RESULT_TIME_FIELD_CANDIDATES)),
+        "review_time": _coerce(_pick(row, REVIEW_TIME_FIELD_CANDIDATES)),
+        "callback_time": _coerce(_pick(row, CALLBACK_TIME_FIELD_CANDIDATES)),
+        "is_first_deposit": _coerce(_pick(row, FIRST_DEPOSIT_FIELD_CANDIDATES)),
+        "region": _coerce(_pick(row, REGION_FIELD_CANDIDATES)),
     }
 
 
@@ -115,6 +168,10 @@ def fmt_date(d: datetime) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def shift_date(date_str: str, days: int) -> str:
+    return fmt_date(datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=days))
+
+
 def deposit_withdraw_window(sync_window_days: int = 5) -> tuple[str, str]:
     """N calendar days including today — mirrors syncWindow() in exportClient.ts."""
     today = today_utc_date()
@@ -129,13 +186,21 @@ def is_first_wallet_run_of_day() -> bool:
     """True exactly once per IST calendar day — mirrors isFirstWalletRunOfDay()
     in exportClient.ts, using the SAME KV key, so the Python and (now retired)
     Workers logic can never disagree about which run is "first" even if both
-    were ever run side by side."""
+    were ever run side by side.
+
+    Read-only: does NOT mark the day as run. Call mark_wallet_run_of_day()
+    only after the sync actually succeeds, so a failed first run stays
+    "first" and retries still pull the previous day rather than silently
+    skipping it."""
     today_str = fmt_date(today_ist_date())
     last_run_date = cf_client.kv_get(WALLET_LAST_RUN_DATE_KEY)
-    if last_run_date == today_str:
-        return False
-    cf_client.kv_put(WALLET_LAST_RUN_DATE_KEY, today_str)
-    return True
+    return last_run_date != today_str
+
+
+def mark_wallet_run_of_day() -> None:
+    """Records today's IST date as the last successful wallet run. Call this
+    only after a successful sync — see is_first_wallet_run_of_day()."""
+    cf_client.kv_put(WALLET_LAST_RUN_DATE_KEY, fmt_date(today_ist_date()))
 
 
 def wallet_window(is_first_run_of_day: bool) -> tuple[str, str]:

@@ -88,3 +88,22 @@ export function extractCommonFields(row: Record<string, unknown>) {
     create_time: coerceForBind(pick(row, TIME_FIELD_CANDIDATES)) as string | null,
   };
 }
+
+// Mirrors etl/common.py's extract_user_profile_fields — see that file's
+// comment for why city and createTime are deliberately excluded (city
+// granularity mismatch with master_db.city; createTime category mismatch
+// with master_db.create_time). Kept in sync with the Python version by
+// hand since this is TS vs Python, not a shared module.
+const USER_PHONE_FIELD_CANDIDATES = ["userPhone", "UserPhone"];
+const USER_MARK_FIELD_CANDIDATES = ["mark"];
+const MEMBER_LEVEL_FIELD_CANDIDATES = ["memberLevel"];
+const WALLET_BALANCE_FIELD_CANDIDATES = ["changeAfter"];
+
+export function extractUserProfileFields(row: Record<string, unknown>) {
+  return {
+    phone: coerceForBind(pick(row, USER_PHONE_FIELD_CANDIDATES)) as string | null,
+    mark: coerceForBind(pick(row, USER_MARK_FIELD_CANDIDATES)) as string | null,
+    member_level: coerceForBind(pick(row, MEMBER_LEVEL_FIELD_CANDIDATES)) as number | string | null,
+    wallet_balance: coerceForBind(pick(row, WALLET_BALANCE_FIELD_CANDIDATES)) as number | null,
+  };
+}
