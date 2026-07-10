@@ -86,7 +86,7 @@ async function iuLoadTier(tier) {
 
     document.getElementById(prefix + 'Total').textContent = iuFmtNum(d.total);
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level +
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level +
       '</td><td>' + iuFmtInr(r.total_deposit) + '</td><td>' + iuFmtInr(r.user_balance) +
       '</td><td>' + iuFmtNum(r.inactive_days) + '</td><td>' + r.last_active_date + '</td></tr>'
     ).join('') || '<tr><td colspan="7">No data</td></tr>';

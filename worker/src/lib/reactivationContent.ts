@@ -123,7 +123,7 @@ async function rxLoadTier(tier, date) {
       'Conversion funnel · 3-day: <b>' + pct3.toFixed(2) + '%</b> (' + rxFmtNum(d.reactivated3DayCount) + ' of ' + rxFmtNum(d.cohortSize) + ') · 7-day: not enough history yet';
 
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level +
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level +
       '</td><td>' + rxFmtNum(r.inactive_days) + '</td><td>' + rxFmtInr(r.day_deposit) + '</td></tr>'
     ).join('') || '<tr><td colspan="5">No data</td></tr>';
 

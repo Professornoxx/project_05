@@ -64,7 +64,7 @@ async function nuLoad() {
     document.getElementById('nuTotal').textContent = nuFmtNum(d.total);
     document.querySelector('#nuTable tbody').innerHTML = (d.rows || []).map((r) => {
       const plClass = r.profit_loss >= 0 ? 'nu-pl-pos' : 'nu-pl-neg';
-      return '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level +
+      return '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level +
         '</td><td>' + nuFmtNum(r.deposit_count) + '</td><td>' + nuFmtInr(r.total_deposit) +
         '</td><td>' + nuFmtInr(r.total_withdrawal) + '</td><td class="' + plClass + '">' + nuFmtInr(r.profit_loss) +
         '</td><td>' + r.region + '</td></tr>';

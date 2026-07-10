@@ -89,7 +89,7 @@ async function acLoadTier(tier) {
 
     document.getElementById(prefix + 'Total').textContent = acFmtNum(d.total);
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level + '</td><td>' + r.next_level +
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level + '</td><td>' + r.next_level +
       '</td><td>' + acFmtInr(r.total_deposit) + '</td><td>' + acFmtInr(r.gap) + '</td><td>' + acFmtNum(r.inactive_days) + '</td></tr>'
     ).join('') || '<tr><td colspan="7">No data</td></tr>';
 

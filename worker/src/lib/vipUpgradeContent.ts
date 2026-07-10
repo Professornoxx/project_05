@@ -126,7 +126,7 @@ async function vuLoadTier(tier, date) {
       'Conversion funnel · 3-day: <b>' + pct3.toFixed(2) + '%</b> (' + vuFmtNum(d.upgraded3DayCount) + ' of ' + vuFmtNum(d.cohortSize) + ') · 7-day: not enough history yet';
 
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.vip_before + '</td><td>' + r.vip_after +
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.vip_before + '</td><td>' + r.vip_after +
       '</td><td>' + vuFmtInr(r.day_deposit) + '</td><td>' + vuFmtInr(r.amount_over_minimum) + '</td></tr>'
     ).join('') || '<tr><td colspan="6">No data</td></tr>';
 

@@ -86,7 +86,7 @@ async function auLoadTier(tier) {
 
     document.getElementById(prefix + 'Total').textContent = auFmtNum(d.total);
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level +
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level +
       '</td><td>' + auFmtInr(r.total_deposit) + '</td><td>' + auFmtInr(r.user_balance) +
       '</td><td>' + auFmtNum(r.inactive_days) + '</td></tr>'
     ).join('') || '<tr><td colspan="6">No data</td></tr>';

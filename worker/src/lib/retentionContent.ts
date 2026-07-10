@@ -147,7 +147,7 @@ async function rtLoadD1(date) {
     document.getElementById('rtD1Avg').textContent = rtFmtInr(d.avgDeposit);
 
     document.querySelector('#rtD1Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + rtFmtInr(r.day_deposit) + '</td><td>' + rtFmtNum(r.deposit_count) + '</td><td>' + r.region + '</td></tr>'
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + rtFmtInr(r.day_deposit) + '</td><td>' + rtFmtNum(r.deposit_count) + '</td><td>' + r.region + '</td></tr>'
     ).join('') || '<tr><td colspan="5">No data</td></tr>';
 
     document.getElementById('rtD1PageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
@@ -176,7 +176,7 @@ async function rtLoadPremium(tier, date) {
     document.getElementById(prefix + 'Avg').textContent = rtFmtInr(d.avgDeposit);
 
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
-      '<tr><td>' + r.user_id + '</td><td>Unassigned</td><td>' + r.current_level + '</td><td>' + rtFmtInr(r.day_deposit) + '</td><td>' + rtFmtNum(r.deposit_count) + '</td></tr>'
+      '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level + '</td><td>' + rtFmtInr(r.day_deposit) + '</td><td>' + rtFmtNum(r.deposit_count) + '</td></tr>'
     ).join('') || '<tr><td colspan="5">No data</td></tr>';
 
     document.getElementById(prefix + 'PageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;

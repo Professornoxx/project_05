@@ -240,7 +240,7 @@ export default {
       const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
 
       const BASE = `FROM (
-          SELECT user_id, total_deposit, last_active_time,
+          SELECT user_id, total_deposit, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
           FROM users WHERE total_deposit IS NOT NULL
         )
@@ -254,7 +254,7 @@ export default {
 
       const rows = await env.master_db
         .prepare(
-          `SELECT user_id, total_deposit, current_level, current_level + 1 as next_level,
+          `SELECT user_id, total_deposit, agent, current_level, current_level + 1 as next_level,
                   (next_level_min - total_deposit) as gap,
                   CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
            ${BASE}
@@ -298,7 +298,7 @@ export default {
       const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 10, 180] : [5, 14, 15, 240];
 
       const BASE = `FROM (
-          SELECT user_id, total_deposit, user_balance, last_active_time,
+          SELECT user_id, total_deposit, user_balance, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
           FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
@@ -312,7 +312,7 @@ export default {
 
       const rows = await env.master_db
         .prepare(
-          `SELECT user_id, current_level, total_deposit, user_balance, inactive_days,
+          `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days,
                   substr(last_active_time, 1, 10) as last_active_date
            ${BASE}
            ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
@@ -402,14 +402,15 @@ export default {
       // Optional: master_db.city, when the user does happen to already be
       // there — falls back to the deposit export's own RegisterCity field.
       const cityByUser: Record<number, string | null> = {};
+      const agentByUser: Record<number, string | null> = {};
       for (let i = 0; i < userIds.length; i += 90) {
         const chunk = userIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
-          .prepare(`SELECT user_id, city FROM users WHERE user_id IN (${placeholders})`)
+          .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
           .bind(...chunk)
-          .all<{ user_id: number; city: string | null }>();
-        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; });
+          .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
+        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; agentByUser[r.user_id] = r.assigned_agent; });
       }
 
       const depositByUser: Record<number, DepositAgg> = {};
@@ -429,6 +430,7 @@ export default {
         const totalWithdrawal = withdrawByUser[uid] ?? 0;
         return {
           user_id: uid,
+          agent: agentByUser[uid] || "Unassigned",
           current_level: vipLevel(totalDeposit),
           deposit_count: dep?.deposit_count ?? 0,
           total_deposit: totalDeposit,
@@ -474,7 +476,7 @@ export default {
       const [minLevel, maxLevel, maxDays] = tier === "low" ? [2, 4, 10] : [5, 14, 15];
 
       const BASE = `FROM (
-          SELECT user_id, total_deposit, user_balance, last_active_time,
+          SELECT user_id, total_deposit, user_balance, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
           FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
@@ -488,7 +490,7 @@ export default {
 
       const rows = await env.master_db
         .prepare(
-          `SELECT user_id, current_level, total_deposit, user_balance, inactive_days
+          `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days
            ${BASE}
            ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
         )
@@ -1013,14 +1015,14 @@ export default {
       const threeDaySet = new Set(threeDayDeposits.results.map((r) => r.user_id));
       const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...threeDaySet]));
 
-      type MasterRow = { user_id: number; current_level: number; inactive_days: number };
+      type MasterRow = { user_id: number; current_level: number; inactive_days: number; agent: string | null };
       let masterRows: MasterRow[] = [];
       for (let i = 0; i < candidateIds.length; i += 90) {
         const chunk = candidateIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
           .prepare(
-            `SELECT user_id, ${CURRENT_LEVEL} as current_level,
+            `SELECT user_id, ${CURRENT_LEVEL} as current_level, assigned_agent as agent,
                     CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
              FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL AND last_active_time IS NOT NULL`
           )
@@ -1034,7 +1036,7 @@ export default {
       );
       const reactivatedTodayRows = cohortMembers
         .filter((r) => todayDepositByUser[r.user_id] !== undefined)
-        .map((r) => ({ user_id: r.user_id, current_level: r.current_level, inactive_days: r.inactive_days, day_deposit: todayDepositByUser[r.user_id] }))
+        .map((r) => ({ user_id: r.user_id, agent: r.agent || "Unassigned", current_level: r.current_level, inactive_days: r.inactive_days, day_deposit: todayDepositByUser[r.user_id] }))
         .sort((a, b) => b.inactive_days - a.inactive_days);
       const reactivated3DayCount = cohortMembers.filter((r) => threeDaySet.has(r.user_id)).length;
 
@@ -1118,14 +1120,14 @@ export default {
       threeDayDeposits.results.forEach((r) => { threeDayDepositByUser[r.user_id] = r.amt; });
       const candidateIds = Array.from(new Set([...Object.keys(todayDepositByUser).map(Number), ...Object.keys(threeDayDepositByUser).map(Number)]));
 
-      type MasterRow = { user_id: number; total_deposit: number; current_level: number; next_level_min: number | null };
+      type MasterRow = { user_id: number; total_deposit: number; current_level: number; next_level_min: number | null; agent: string | null };
       let masterRows: MasterRow[] = [];
       for (let i = 0; i < candidateIds.length; i += 90) {
         const chunk = candidateIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
           .prepare(
-            `SELECT user_id, total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+            `SELECT user_id, total_deposit, assigned_agent as agent, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
              FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
           )
           .bind(...chunk)
@@ -1155,6 +1157,7 @@ export default {
         .filter(({ vipAfter, r }) => vipAfter > r.current_level)
         .map(({ r, dayDeposit, totalAfter, vipAfter }) => ({
           user_id: r.user_id,
+          agent: r.agent || "Unassigned",
           vip_before: r.current_level,
           vip_after: vipAfter,
           day_deposit: dayDeposit,
@@ -1221,20 +1224,22 @@ export default {
       todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
 
       const cityByUser: Record<number, string | null> = {};
+      const agentByUser: Record<number, string | null> = {};
       for (let i = 0; i < cohortIds.length; i += 90) {
         const chunk = cohortIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
-          .prepare(`SELECT user_id, city FROM users WHERE user_id IN (${placeholders})`)
+          .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
           .bind(...chunk)
-          .all<{ user_id: number; city: string | null }>();
-        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; });
+          .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
+        res.results.forEach((r) => { cityByUser[r.user_id] = r.city; agentByUser[r.user_id] = r.assigned_agent; });
       }
 
       const retainedRows = cohortIds
         .filter((uid) => todayByUser[uid] !== undefined)
         .map((uid) => ({
           user_id: uid,
+          agent: agentByUser[uid] || "Unassigned",
           day_deposit: todayByUser[uid].day_deposit,
           deposit_count: todayByUser[uid].deposit_count,
           region: cityByUser[uid] || regionByUser[uid] || "Unknown",
@@ -1302,13 +1307,13 @@ export default {
       const todayByUser: Record<number, { day_deposit: number; deposit_count: number }> = {};
       todayAgg.results.forEach((r) => { todayByUser[r.user_id] = r; });
 
-      type MasterRow = { user_id: number; current_level: number };
+      type MasterRow = { user_id: number; current_level: number; agent: string | null };
       let masterRows: MasterRow[] = [];
       for (let i = 0; i < todayIds.length; i += 90) {
         const chunk = todayIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
         const res = await env.master_db
-          .prepare(`SELECT user_id, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
+          .prepare(`SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
           .bind(...chunk)
           .all<MasterRow>();
         masterRows = masterRows.concat(res.results);
@@ -1318,6 +1323,7 @@ export default {
         .filter((r) => r.current_level >= minLevel && r.current_level <= maxLevel)
         .map((r) => ({
           user_id: r.user_id,
+          agent: r.agent || "Unassigned",
           current_level: r.current_level,
           day_deposit: todayByUser[r.user_id].day_deposit,
           deposit_count: todayByUser[r.user_id].deposit_count,
