@@ -17,6 +17,7 @@ import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
+import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 import { cleanupOldSyncRuns } from "./lib/cleanup";
@@ -198,6 +199,8 @@ export default {
           ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : dashboardRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
+          : dashboardRoute.key === "performance"
+          ? PERFORMANCE_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -1346,6 +1349,285 @@ export default {
         cohortSize,
         retainedCount,
         avgDeposit,
+      });
+    }
+
+    // Performance page: Monthly Leaderboard & Incentives + Daily/Range
+    // Performance table. 7 KPIs per agent (equal weight): reactivation
+    // low/high, retention, VIP upgrade low/high, premium active low/high —
+    // each is the same metric already built for Action Center/Analytics,
+    // just grouped by assigned_agent instead of site-wide. A KPI with a
+    // denominator of 0 (agent has no users in that cohort) is excluded
+    // from the agent's score average entirely, not counted as 0% — matches
+    // the "No users assigned -- excluded, not counted against them" legend.
+    // Incentive bracket amounts are NOT computed here, only displayed as
+    // static reference text — no payout logic exists yet.
+    if (url.pathname === "/api/dashboard/performance" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const rangeParam = url.searchParams.get("range") || "today";
+      const rangeStart = (() => {
+        const d = new Date(anchorDate + "T00:00:00Z");
+        if (rangeParam === "yesterday") { d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
+        if (rangeParam === "7d") { d.setUTCDate(d.getUTCDate() - 6); return d.toISOString().slice(0, 10); }
+        if (rangeParam === "30d") { d.setUTCDate(d.getUTCDate() - 29); return d.toISOString().slice(0, 10); }
+        if (rangeParam === "35d") { d.setUTCDate(d.getUTCDate() - 34); return d.toISOString().slice(0, 10); }
+        return anchorDate; // "today" and any custom single-date selection
+      })();
+      const rangeEnd = rangeParam === "yesterday" ? rangeStart : anchorDate;
+
+      const CURRENT_LEVEL = `CASE
+        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
+        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
+        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
+        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
+        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const NEXT_LEVEL_MIN = `CASE
+        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
+        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
+        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
+        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
+        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+      const vipLevel = (totalDeposit: number): number => {
+        const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
+        for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
+        return 14;
+      };
+
+      type Ratio = { num: number; den: number };
+      type AgentKPIs = {
+        reactivationLow: Ratio; reactivationHigh: Ratio; retention: Ratio;
+        vipUpgradeLow: Ratio; vipUpgradeHigh: Ratio; premiumActiveLow: Ratio; premiumActiveHigh: Ratio;
+      };
+
+      async function computeAgentKPIs(start: string, end: string): Promise<Record<string, AgentKPIs>> {
+        const agents: Record<string, AgentKPIs> = {};
+        const ensure = (agent: string) => {
+          if (!agents[agent]) {
+            agents[agent] = {
+              reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
+              vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 },
+              premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
+            };
+          }
+          return agents[agent];
+        };
+
+        // Reactivation (low/high): denominator = agent's currently-inactive
+        // cohort (GROUP BY, cheap); numerator = of those, who deposited
+        // anywhere in [start,end].
+        for (const [key, minLevel, maxLevel, minDays, maxDays] of [
+          ["reactivationLow", 2, 4, 10, 180], ["reactivationHigh", 5, 14, 15, 240],
+        ] as [keyof AgentKPIs, number, number, number, number][]) {
+          const denRows = await env.master_db
+            .prepare(
+              `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
+                 SELECT assigned_agent, ${CURRENT_LEVEL} as current_level,
+                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+                 FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+               ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ? GROUP BY agent`
+            )
+            .bind(minLevel, maxLevel, minDays, maxDays)
+            .all<{ agent: string; c: number }>();
+          denRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
+
+          const rangeDepositors = await env.daily_records_db
+            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
+            .bind(start, end)
+            .all<{ user_id: number }>();
+          const ids = rangeDepositors.results.map((r) => r.user_id);
+          for (let i = 0; i < ids.length; i += 90) {
+            const chunk = ids.slice(i, i + 90);
+            const placeholders = chunk.map(() => "?").join(",");
+            const res = await env.master_db
+              .prepare(
+                `SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level,
+                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+                 FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL AND last_active_time IS NOT NULL`
+              )
+              .bind(...chunk)
+              .all<{ agent: string; current_level: number; inactive_days: number }>();
+            res.results.forEach((r) => {
+              if (r.current_level >= minLevel && r.current_level <= maxLevel && r.inactive_days >= minDays && r.inactive_days <= maxDays) {
+                ensure(r.agent)[key].num++;
+              }
+            });
+          }
+        }
+
+        // VIP Upgrade (low/high): denominator = agent's near-upgrade cohort
+        // (current state); numerator = of those, whose baseline total_deposit
+        // + their deposits across [start,end] crosses the next bracket.
+        for (const [key, minLevel, maxLevel, maxGap] of [
+          ["vipUpgradeLow", 2, 4, 1000], ["vipUpgradeHigh", 5, 13, 50000],
+        ] as [keyof AgentKPIs, number, number, number][]) {
+          const cohortRows = await env.master_db
+            .prepare(
+              `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
+                 SELECT assigned_agent, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min, total_deposit
+                 FROM users WHERE total_deposit IS NOT NULL
+               ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+                 AND (next_level_min - total_deposit) BETWEEN 1 AND ? GROUP BY agent`
+            )
+            .bind(minLevel, maxLevel, maxGap)
+            .all<{ agent: string; c: number }>();
+          cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
+
+          const rangeDeposits = await env.daily_records_db
+            .prepare(`SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id`)
+            .bind(start, end)
+            .all<{ user_id: number; amt: number }>();
+          const depositByUser: Record<number, number> = {};
+          rangeDeposits.results.forEach((r) => { depositByUser[r.user_id] = r.amt; });
+          const ids = rangeDeposits.results.map((r) => r.user_id);
+          for (let i = 0; i < ids.length; i += 90) {
+            const chunk = ids.slice(i, i + 90);
+            const placeholders = chunk.map(() => "?").join(",");
+            const res = await env.master_db
+              .prepare(
+                `SELECT COALESCE(assigned_agent,'Unassigned') as agent, user_id, total_deposit,
+                        ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+                 FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
+              )
+              .bind(...chunk)
+              .all<{ agent: string; user_id: number; total_deposit: number; current_level: number; next_level_min: number | null }>();
+            res.results.forEach((r) => {
+              if (r.next_level_min === null) return;
+              const gap = r.next_level_min - r.total_deposit;
+              if (r.current_level < minLevel || r.current_level > maxLevel || gap < 1 || gap > maxGap) return;
+              const totalAfter = r.total_deposit + (depositByUser[r.user_id] ?? 0);
+              if (vipLevel(totalAfter) > r.current_level) ensure(r.agent)[key].num++;
+            });
+          }
+        }
+
+        // Premium Active (low/high): denominator = agent's total population
+        // in that VIP bracket (current state, no activity filter);
+        // numerator = of those, who deposited anywhere in [start,end].
+        for (const [key, minLevel, maxLevel] of [
+          ["premiumActiveLow", 2, 4], ["premiumActiveHigh", 5, 14],
+        ] as [keyof AgentKPIs, number, number][]) {
+          const cohortRows = await env.master_db
+            .prepare(
+              `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
+                 SELECT assigned_agent, ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL
+               ) WHERE current_level BETWEEN ? AND ? GROUP BY agent`
+            )
+            .bind(minLevel, maxLevel)
+            .all<{ agent: string; c: number }>();
+          cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
+
+          const rangeDepositors = await env.daily_records_db
+            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
+            .bind(start, end)
+            .all<{ user_id: number }>();
+          const ids = rangeDepositors.results.map((r) => r.user_id);
+          for (let i = 0; i < ids.length; i += 90) {
+            const chunk = ids.slice(i, i + 90);
+            const placeholders = chunk.map(() => "?").join(",");
+            const res = await env.master_db
+              .prepare(`SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
+              .bind(...chunk)
+              .all<{ agent: string; current_level: number }>();
+            res.results.forEach((r) => {
+              if (r.current_level >= minLevel && r.current_level <= maxLevel) ensure(r.agent)[key].num++;
+            });
+          }
+        }
+
+        // Retention: no VIP split. Looped per day in range since the cohort
+        // ("yesterday's first-deposit users") refreshes daily — sums
+        // numerator/denominator across every day in [start,end].
+        const dayList: string[] = [];
+        for (let d = new Date(start + "T00:00:00Z"); d <= new Date(end + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1)) {
+          dayList.push(d.toISOString().slice(0, 10));
+        }
+        for (const day of dayList) {
+          const yesterday = new Date(day + "T00:00:00Z");
+          yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+          const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+          const firstDeposits = await env.daily_records_db
+            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL`)
+            .bind(yesterdayStr)
+            .all<{ user_id: number }>();
+          const cohortIds = firstDeposits.results.map((r) => r.user_id);
+          if (cohortIds.length === 0) continue;
+
+          const todayDeposits = await env.daily_records_db
+            .prepare(`SELECT DISTINCT user_id FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL`)
+            .bind(day)
+            .all<{ user_id: number }>();
+          const depositedSet = new Set(todayDeposits.results.map((r) => r.user_id));
+
+          const placeholders = cohortIds.map(() => "?").join(",");
+          const res = await env.master_db
+            .prepare(`SELECT user_id, COALESCE(assigned_agent,'Unassigned') as agent FROM users WHERE user_id IN (${placeholders})`)
+            .bind(...cohortIds)
+            .all<{ user_id: number; agent: string }>();
+          res.results.forEach((r) => {
+            ensure(r.agent).retention.den++;
+            if (depositedSet.has(r.user_id)) ensure(r.agent).retention.num++;
+          });
+        }
+
+        return agents;
+      }
+
+      const rangeKPIs = await computeAgentKPIs(rangeStart, rangeEnd);
+
+      const monthStart = anchorDate.slice(0, 8) + "01";
+      const monthKPIs = anchorDate === monthStart ? rangeKPIs : await computeAgentKPIs(monthStart, anchorDate);
+
+      const scoreOf = (kpis: AgentKPIs): { pct: number | null; kpiPcts: Record<string, number | null> } => {
+        const entries = Object.entries(kpis) as [string, Ratio][];
+        const pcts: Record<string, number | null> = {};
+        const validPcts: number[] = [];
+        entries.forEach(([k, v]) => {
+          if (v.den === 0) { pcts[k] = null; return; }
+          const pct = (v.num / v.den) * 100;
+          pcts[k] = pct;
+          validPcts.push(pct);
+        });
+        const overall = validPcts.length > 0 ? validPcts.reduce((s, v) => s + v, 0) / validPcts.length : null;
+        return { pct: overall, kpiPcts: pcts };
+      };
+
+      const agentNames = Array.from(new Set([...Object.keys(rangeKPIs), ...Object.keys(monthKPIs)])).filter((a) => a !== "Unassigned");
+
+      const dailyTable = agentNames
+        .map((agent) => {
+          const kpis = rangeKPIs[agent] ?? {
+            reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
+            vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 }, premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
+          };
+          const { pct, kpiPcts } = scoreOf(kpis);
+          return { agent, kpis, kpiPcts, score: pct };
+        })
+        .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+
+      const monthlyLeaderboard = agentNames
+        .map((agent) => {
+          const kpis = monthKPIs[agent] ?? {
+            reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
+            vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 }, premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
+          };
+          const { pct } = scoreOf(kpis);
+          return { agent, score: pct };
+        })
+        .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
+        .slice(0, 3);
+
+      return Response.json({
+        date: anchorDate,
+        range: rangeParam,
+        rangeStart,
+        rangeEnd,
+        monthStart,
+        dailyTable,
+        monthlyLeaderboard,
       });
     }
 
