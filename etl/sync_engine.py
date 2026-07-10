@@ -17,7 +17,11 @@ import requests
 import cf_client
 import common
 
-MASTER_DB_ID = os.environ["MASTER_DB_ID"]
+# Merged database: DAILY_DB_ID now points at the single D1 database holding
+# both users (migrated from the former separate master-db) and
+# deposits/withdrawals/wallet_details/sync_runs. The old MASTER_DB_ID env
+# var is no longer read here — every d1_query call in this file uses
+# DAILY_DB_ID, including the ones writing to the users table.
 DAILY_DB_ID = os.environ["DAILY_DB_ID"]
 PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 
@@ -191,13 +195,13 @@ def update_master_aggregates(table: str, user_ids: list[int]) -> int:
             now = datetime.now(timezone.utc).isoformat()
             if count_column:
                 cf_client.d1_query(
-                    MASTER_DB_ID,
+                    DAILY_DB_ID,
                     f"UPDATE users SET {column} = ?, {count_column} = ?, update_time = ? WHERE user_id = ?",
                     [row["total"], row["cnt"], now, row["user_id"]],
                 )
             else:
                 cf_client.d1_query(
-                    MASTER_DB_ID,
+                    DAILY_DB_ID,
                     f"UPDATE users SET {column} = ?, update_time = ? WHERE user_id = ?",
                     [row["total"], now, row["user_id"]],
                 )
@@ -284,7 +288,7 @@ def update_master_profiles(updates: dict[int, dict]) -> int:
             "user_balance = COALESCE(excluded.user_balance, users.user_balance), "
             "update_time = excluded.update_time"
         )
-        cf_client.d1_query(MASTER_DB_ID, sql, params)
+        cf_client.d1_query(DAILY_DB_ID, sql, params)
         written += len(chunk)
     return written
 

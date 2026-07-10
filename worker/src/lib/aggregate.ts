@@ -41,13 +41,13 @@ export async function updateMasterAggregatesForUsers(
       const binds = countColumn
         ? [row.total, row.cnt, new Date().toISOString(), row.user_id]
         : [row.total, new Date().toISOString(), row.user_id];
-      return env.master_db
+      return env.daily_records_db
         .prepare(`UPDATE users SET ${setClause} WHERE user_id = ?`)
         .bind(...binds);
     });
 
     if (statements.length > 0) {
-      await env.master_db.batch(statements);
+      await env.daily_records_db.batch(statements);
       updated += statements.length;
     }
   }
@@ -103,7 +103,7 @@ export async function updateMasterProfilesForUsers(
   for (let i = 0; i < entries.length; i += CHUNK) {
     const chunk = entries.slice(i, i + CHUNK);
     const statements = chunk.map(([uid, fields]) =>
-      env.master_db
+      env.daily_records_db
         .prepare(
           `INSERT INTO users (user_id, phone, mark, member_level, user_balance, update_time)
            VALUES (?, ?, ?, ?, ?, ?)
@@ -116,7 +116,7 @@ export async function updateMasterProfilesForUsers(
         )
         .bind(uid, fields.phone, fields.mark, fields.member_level, fields.wallet_balance, now)
     );
-    await env.master_db.batch(statements);
+    await env.daily_records_db.batch(statements);
     written += statements.length;
   }
 

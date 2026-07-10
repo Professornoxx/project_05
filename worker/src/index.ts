@@ -250,12 +250,12 @@ export default {
         WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
           AND (next_level_min - total_deposit) BETWEEN 1 AND ?`;
 
-      const countRow = await env.master_db
+      const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
         .bind(minLevel, maxLevel, maxGap)
         .first<{ c: number }>();
 
-      const rows = await env.master_db
+      const rows = await env.daily_records_db
         .prepare(
           `SELECT user_id, total_deposit, agent, current_level, current_level + 1 as next_level,
                   (next_level_min - total_deposit) as gap,
@@ -308,12 +308,12 @@ export default {
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`;
 
-      const countRow = await env.master_db
+      const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
         .bind(minLevel, maxLevel, minDays, maxDays)
         .first<{ c: number }>();
 
-      const rows = await env.master_db
+      const rows = await env.daily_records_db
         .prepare(
           `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days,
                   substr(last_active_time, 1, 10) as last_active_date
@@ -409,7 +409,7 @@ export default {
       for (let i = 0; i < userIds.length; i += 90) {
         const chunk = userIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.master_db
+        const res = await env.daily_records_db
           .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
           .bind(...chunk)
           .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
@@ -486,12 +486,12 @@ export default {
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?`;
 
-      const countRow = await env.master_db
+      const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
         .bind(minLevel, maxLevel, maxDays)
         .first<{ c: number }>();
 
-      const rows = await env.master_db
+      const rows = await env.daily_records_db
         .prepare(
           `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days
            ${BASE}
@@ -584,7 +584,7 @@ export default {
         .bind(date, date, date)
         .first<{ c: number }>();
 
-      const totalUsersRow = await env.master_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
+      const totalUsersRow = await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
 
       return Response.json({
         date,
@@ -908,7 +908,7 @@ export default {
       const chunkResults = await Promise.all(
         chunks.map((chunk) => {
           const placeholders = chunk.map(() => "?").join(",");
-          return env.master_db
+          return env.daily_records_db
             .prepare(`SELECT user_id, city, total_deposit FROM users WHERE user_id IN (${placeholders})`)
             .bind(...chunk)
             .all<MasterRow>();
@@ -990,7 +990,7 @@ export default {
         WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
         WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
 
-      const cohortCountRow = await env.master_db
+      const cohortCountRow = await env.daily_records_db
         .prepare(
           `SELECT COUNT(*) as c FROM (
              SELECT ${CURRENT_LEVEL} as current_level,
@@ -1023,7 +1023,7 @@ export default {
       for (let i = 0; i < candidateIds.length; i += 90) {
         const chunk = candidateIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.master_db
+        const res = await env.daily_records_db
           .prepare(
             `SELECT user_id, ${CURRENT_LEVEL} as current_level, assigned_agent as agent,
                     CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
@@ -1096,7 +1096,7 @@ export default {
         WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
         WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
 
-      const cohortCountRow = await env.master_db
+      const cohortCountRow = await env.daily_records_db
         .prepare(
           `SELECT COUNT(*) as c FROM (
              SELECT total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
@@ -1128,7 +1128,7 @@ export default {
       for (let i = 0; i < candidateIds.length; i += 90) {
         const chunk = candidateIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.master_db
+        const res = await env.daily_records_db
           .prepare(
             `SELECT user_id, total_deposit, assigned_agent as agent, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
              FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`
@@ -1231,7 +1231,7 @@ export default {
       for (let i = 0; i < cohortIds.length; i += 90) {
         const chunk = cohortIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.master_db
+        const res = await env.daily_records_db
           .prepare(`SELECT user_id, city, assigned_agent FROM users WHERE user_id IN (${placeholders})`)
           .bind(...chunk)
           .all<{ user_id: number; city: string | null; assigned_agent: string | null }>();
@@ -1290,7 +1290,7 @@ export default {
         WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
         WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
 
-      const cohortCountRow = await env.master_db
+      const cohortCountRow = await env.daily_records_db
         .prepare(
           `SELECT COUNT(*) as c FROM (SELECT ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL)
            WHERE current_level BETWEEN ? AND ?`
@@ -1315,7 +1315,7 @@ export default {
       for (let i = 0; i < todayIds.length; i += 90) {
         const chunk = todayIds.slice(i, i + 90);
         const placeholders = chunk.map(() => "?").join(",");
-        const res = await env.master_db
+        const res = await env.daily_records_db
           .prepare(`SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
           .bind(...chunk)
           .all<MasterRow>();
@@ -1431,7 +1431,7 @@ export default {
         const reactivationTask = Promise.all(([
           ["reactivationLow", 2, 4, 10, 180, 30], ["reactivationHigh", 5, 14, 15, 240, 10],
         ] as [keyof AgentKPIs, number, number, number, number, number][]).map(async ([key, minLevel, maxLevel, minDays, maxDays, target]) => {
-          const denRows = await env.master_db
+          const denRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
                  SELECT assigned_agent, ${CURRENT_LEVEL} as current_level,
@@ -1451,7 +1451,7 @@ export default {
           for (let i = 0; i < ids.length; i += 90) {
             const chunk = ids.slice(i, i + 90);
             const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.master_db
+            const res = await env.daily_records_db
               .prepare(
                 `SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level,
                         CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
@@ -1474,7 +1474,7 @@ export default {
         const vipUpgradeTask = Promise.all(([
           ["vipUpgradeLow", 2, 4, 1000, 10], ["vipUpgradeHigh", 5, 13, 50000, 5],
         ] as [keyof AgentKPIs, number, number, number, number][]).map(async ([key, minLevel, maxLevel, maxGap, target]) => {
-          const cohortRows = await env.master_db
+          const cohortRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
                  SELECT assigned_agent, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min, total_deposit
@@ -1496,7 +1496,7 @@ export default {
           for (let i = 0; i < ids.length; i += 90) {
             const chunk = ids.slice(i, i + 90);
             const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.master_db
+            const res = await env.daily_records_db
               .prepare(
                 `SELECT COALESCE(assigned_agent,'Unassigned') as agent, user_id, total_deposit,
                         ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
@@ -1520,7 +1520,7 @@ export default {
         const premiumActiveTask = Promise.all(([
           ["premiumActiveLow", 2, 4], ["premiumActiveHigh", 5, 14],
         ] as [keyof AgentKPIs, number, number][]).map(async ([key, minLevel, maxLevel]) => {
-          const cohortRows = await env.master_db
+          const cohortRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
                  SELECT assigned_agent, ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL
@@ -1538,7 +1538,7 @@ export default {
           for (let i = 0; i < ids.length; i += 90) {
             const chunk = ids.slice(i, i + 90);
             const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.master_db
+            const res = await env.daily_records_db
               .prepare(`SELECT COALESCE(assigned_agent,'Unassigned') as agent, ${CURRENT_LEVEL} as current_level FROM users WHERE user_id IN (${placeholders}) AND total_deposit IS NOT NULL`)
               .bind(...chunk)
               .all<{ agent: string; current_level: number }>();
@@ -1577,7 +1577,7 @@ export default {
           for (let i = 0; i < cohortUserIds.length; i += 90) {
             const chunk = cohortUserIds.slice(i, i + 90);
             const placeholders = chunk.map(() => "?").join(",");
-            const res = await env.master_db
+            const res = await env.daily_records_db
               .prepare(`SELECT user_id, COALESCE(assigned_agent,'Unassigned') as agent FROM users WHERE user_id IN (${placeholders})`)
               .bind(...chunk)
               .all<{ user_id: number; agent: string }>();
@@ -1669,7 +1669,7 @@ export default {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
-      const totals = await env.master_db
+      const totals = await env.daily_records_db
         .prepare(
           `SELECT COUNT(*) as total_users,
                   SUM(user_balance) as total_balance,
@@ -1681,21 +1681,21 @@ export default {
         )
         .first();
 
-      const topByBalance = await env.master_db
+      const topByBalance = await env.daily_records_db
         .prepare(
           `SELECT user_id, username, phone, city, user_balance, total_deposit, total_withdrawal
            FROM users WHERE user_balance IS NOT NULL ORDER BY user_balance DESC LIMIT 10`
         )
         .all();
 
-      const topByDeposit = await env.master_db
+      const topByDeposit = await env.daily_records_db
         .prepare(
           `SELECT user_id, username, phone, city, total_deposit, deposit_count
            FROM users WHERE total_deposit IS NOT NULL ORDER BY total_deposit DESC LIMIT 10`
         )
         .all();
 
-      const byCity = await env.master_db
+      const byCity = await env.daily_records_db
         .prepare(
           `SELECT city, COUNT(*) as user_count FROM users
            WHERE city IS NOT NULL AND city != '' GROUP BY city ORDER BY user_count DESC LIMIT 10`

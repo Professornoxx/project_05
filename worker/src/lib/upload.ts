@@ -38,7 +38,7 @@ export async function handleAgentUpload(file: ArrayBuffer, env: Env, filename: s
 
   const startedAt = new Date().toISOString();
   const statements = assignments.map((a) =>
-    env.master_db.prepare(`UPDATE users SET assigned_agent = ? WHERE user_id = ?`).bind(a.agent, a.user_id)
+    env.daily_records_db.prepare(`UPDATE users SET assigned_agent = ? WHERE user_id = ?`).bind(a.agent, a.user_id)
   );
 
   // 2 bound params/statement here vs. the full-row master upload's 56 —
@@ -50,7 +50,7 @@ export async function handleAgentUpload(file: ArrayBuffer, env: Env, filename: s
   for (let i = 0; i < statements.length; i += WRITE_BATCH) {
     const slice = statements.slice(i, i + WRITE_BATCH);
     try {
-      await env.master_db.batch(slice);
+      await env.daily_records_db.batch(slice);
       updated += slice.length;
     } catch (err) {
       failed += slice.length;
@@ -123,7 +123,7 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
   // ON CONFLICT DO UPDATE never changes the table's total row count,
   // (count_after - count_before) is exactly the number of new inserts —
   // 2 subrequests total regardless of dataset size.
-  const countBefore = await env.master_db
+  const countBefore = await env.daily_records_db
     .prepare(`SELECT COUNT(*) as c FROM users`)
     .first<{ c: number }>();
 
@@ -140,7 +140,7 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
     const bindValues = insertColumns.map((col) =>
       col === "user_id" ? m.user_id : col === "update_time" ? now : m.values[col] ?? null
     );
-    return env.master_db
+    return env.daily_records_db
       .prepare(
         `INSERT INTO users (${insertColumns.join(",")}) VALUES (${placeholders})
          ON CONFLICT(user_id) DO UPDATE SET ${setClause}`
@@ -160,7 +160,7 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
   for (let i = 0; i < statements.length; i += WRITE_BATCH) {
     const slice = statements.slice(i, i + WRITE_BATCH);
     try {
-      await env.master_db.batch(slice);
+      await env.daily_records_db.batch(slice);
       successfullyWritten += slice.length;
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -170,7 +170,7 @@ export async function handleMasterUpload(file: ArrayBuffer, env: Env, filename: 
     }
   }
 
-  const countAfter = await env.master_db
+  const countAfter = await env.daily_records_db
     .prepare(`SELECT COUNT(*) as c FROM users`)
     .first<{ c: number }>();
   const inserted = (countAfter?.c ?? 0) - (countBefore?.c ?? 0);
