@@ -25,6 +25,18 @@
     }
   ],
 
+  // Historical retention: cleanup.ts archives each table's purged rows here
+  // as dated JSON before deleting them from the 35-day rolling window —
+  // that logic already existed (env.UPLOADS?.put, optional-R2 pattern) but
+  // had nothing to write to until R2 was enabled on the account. Also used
+  // by upload.ts to archive raw uploaded files (master/agent spreadsheets).
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "daily-records-archive"
+    }
+  ],
+
   "triggers": {
     // Daily cleanup (purges sync_runs entries older than 35 days) moved
     // here from sync-worker — it's a write operation, belongs with the
