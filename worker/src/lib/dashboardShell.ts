@@ -20,8 +20,19 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "search-user", label: "Search User", icon: "🔍", href: "/dashboard/search-user" },
 ];
 
-function renderNav(activeKey: string): string {
-  return NAV_ITEMS.map((item) => {
+// Agent Dashboard's restricted nav — the 5 pages the Agent role is scoped
+// to (no Platform Analysis, no Configuration). Same shell/styles as the
+// admin dashboard, just a different link set and logout target.
+export const AGENT_NAV_ITEMS: NavItem[] = [
+  { key: "home", label: "Home", icon: "🏠", href: "/agent" },
+  { key: "action-center", label: "Action Center", icon: "⚡", href: "/agent/action-center" },
+  { key: "performance", label: "Performance", icon: "🏆", href: "/agent/performance" },
+  { key: "analytics", label: "Analytics", icon: "📊", href: "/agent/analytics" },
+  { key: "search-user", label: "Search User", icon: "🔍", href: "/agent/search-user" },
+];
+
+function renderNav(activeKey: string, navItems: NavItem[]): string {
+  return navItems.map((item) => {
     const isActive = item.key === activeKey;
     return `<a href="${item.href}" class="nav-item${isActive ? " active" : ""}">
       <span class="nav-icon">${item.icon}</span>
@@ -30,7 +41,15 @@ function renderNav(activeKey: string): string {
   }).join("\n");
 }
 
-export function renderDashboardShell(activeKey: string, pageTitle: string, contentHtml: string): string {
+export function renderDashboardShell(
+  activeKey: string,
+  pageTitle: string,
+  contentHtml: string,
+  opts?: { navItems?: NavItem[]; logoutUrl?: string; loginUrl?: string }
+): string {
+  const navItems = opts?.navItems ?? NAV_ITEMS;
+  const logoutUrl = opts?.logoutUrl ?? "/logout";
+  const loginUrl = opts?.loginUrl ?? "/login";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -101,7 +120,7 @@ export function renderDashboardShell(activeKey: string, pageTitle: string, conte
 </head>
 <body>
 <div class="sidebar">
-  ${renderNav(activeKey)}
+  ${renderNav(activeKey, navItems)}
   <a href="#" class="logout" id="logoutLink">Log out</a>
 </div>
 <div class="main">
@@ -114,8 +133,8 @@ export function renderDashboardShell(activeKey: string, pageTitle: string, conte
 <script>
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
-  await fetch('/logout', { method: 'POST' });
-  location.href = '/login';
+  await fetch('${logoutUrl}', { method: 'POST' });
+  location.href = '${loginUrl}';
 };
 
 // Real last-successful-sync time per source, not the browser's render
