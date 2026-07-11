@@ -62,10 +62,11 @@ const STATUS_FIELD_CANDIDATES = [
   "0 Under review, 1 Payment processing, 2 Completed, 3 Rejected, 4 Failed", "状态",
 ];
 const TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"];
-// wallet-only: see etl/common.py's GAME_NAME_FIELD_CANDIDATES comment for
-// why this is the source of the Bonus Claim Report's category — no
-// dedicated campaign-name field exists in this export.
+// wallet-only: see etl/common.py's GAME_NAME_FIELD_CANDIDATES comment —
+// a row counts as a bonus claim only when game_name is non-blank AND
+// source_name is blank (real gameplay rows have both populated).
 const GAME_NAME_FIELD_CANDIDATES = ["Game Name"];
+const SOURCE_FIELD_CANDIDATES = ["source"];
 
 // D1's bind() only accepts string/number/null/ArrayBuffer — a raw JS Date
 // (which is what parseAllSheets produces for date cells, via cellDates:true)
@@ -91,6 +92,7 @@ export function extractCommonFields(row: Record<string, unknown>) {
     status: coerceForBind(pick(row, STATUS_FIELD_CANDIDATES)) as string | null,
     create_time: coerceForBind(pick(row, TIME_FIELD_CANDIDATES)) as string | null,
     game_name: coerceForBind(pick(row, GAME_NAME_FIELD_CANDIDATES)) as string | null,
+    source_name: coerceForBind(pick(row, SOURCE_FIELD_CANDIDATES)) as string | null,
   };
 }
 

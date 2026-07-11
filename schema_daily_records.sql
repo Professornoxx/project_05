@@ -57,8 +57,13 @@ CREATE TABLE IF NOT EXISTS wallet_details (
   create_time TEXT,
   raw_json TEXT,
   synced_at TEXT NOT NULL,
-  game_name TEXT
+  game_name TEXT,
+  -- Bonus Claim Report's real filter: a row is a bonus claim only when
+  -- game_name is non-blank AND source_name is blank. Real gameplay rows
+  -- have both populated (e.g. game_name="Aviator", source_name="OneApi").
+  source_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_details_user ON wallet_details(user_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_details_create_time ON wallet_details(create_time);
 CREATE INDEX IF NOT EXISTS idx_wallet_details_game_name ON wallet_details(game_name);
+CREATE INDEX IF NOT EXISTS idx_wallet_details_source_name ON wallet_details(source_name);

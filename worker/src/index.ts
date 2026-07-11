@@ -1713,17 +1713,21 @@ export default {
     }
 
     // Platform Analysis section 3: Bonus Claim Report. "Bonus Category" =
-    // wallet_details.game_name (per explicit instruction: a non-blank
-    // Game Name marks a wallet_details row as bonus-eligible, and the
-    // Game Name value itself is the category — there is no separate
-    // marketing-campaign-name field anywhere in this export; see
-    // common.py's GAME_NAME_FIELD_CANDIDATES comment). A user "claims" a
-    // category once per day if they have any such row that day; claimed
-    // users = distinct users, total bonus = sum of those rows' amounts.
-    // "Deposited after" = of those claimers, how many made a COMPLETE
-    // deposit any time after their first claim of that category in the
-    // window (unbounded going forward — deposits data is naturally capped
-    // by its own 5-day rolling sync window regardless).
+    // wallet_details.game_name. Real signal (corrected per explicit
+    // instruction): Game Name alone doesn't distinguish bonus credits from
+    // real gameplay — both can have it populated (e.g. "Aviator" is a real
+    // slot game). The actual bonus marker is source_name being blank —
+    // every real gameplay row has a game-provider name there (OneApi,
+    // InOut, KoolBet, etc.), confirmed only bonus-credit rows leave it
+    // blank. A row counts as a bonus claim only when game_name is
+    // non-blank AND source_name IS blank; the Game Name value itself is
+    // the category. A user "claims" a category once per day if they have
+    // any such row that day; claimed users = distinct users, total bonus =
+    // sum of those rows' amounts. "Deposited after" = of those claimers,
+    // how many made a COMPLETE deposit any time after their first claim of
+    // that category in the window (unbounded going forward — deposits
+    // data is naturally capped by its own 5-day rolling sync window
+    // regardless).
     if (url.pathname === "/api/dashboard/platform-analysis/bonus-claims" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -1740,7 +1744,9 @@ export default {
       const CTE = `WITH bonus_claims AS (
           SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
           FROM wallet_details
-          WHERE game_name IS NOT NULL AND game_name != '' AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+          WHERE game_name IS NOT NULL AND game_name != ''
+            AND (source_name IS NULL OR source_name = '')
+            AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
           GROUP BY user_id, game_name
         ),
         category_totals AS (
