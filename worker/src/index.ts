@@ -1767,6 +1767,137 @@ export default {
       return Response.json({ date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results });
     }
 
+    // Platform Analysis section 4, tab 1: New vs Old User Analysis — Daily
+    // Breakdown. "New" = a user's is_first_deposit=1 day (deposits already
+    // carries this flag); "Old" = any other deposit day for a user who has
+    // deposited before. Withdrawals don't carry is_first_deposit, so a
+    // withdrawal is classified New/Old by whether it falls on that same
+    // user's first-deposit date (via a join, not a stored flag). Covers
+    // every day daily_records_db actually has — bounded by the 35-day
+    // rolling retention, not a fixed "33 days" from any reference design.
+    if (url.pathname === "/api/dashboard/platform-analysis/new-vs-old" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+
+      const countRow = await env.daily_records_db
+        .prepare(`SELECT COUNT(DISTINCT date(create_time)) as c FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL`)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `WITH dep AS (
+             SELECT user_id, date(create_time) as d, amount, COALESCE(is_first_deposit, 0) as is_new
+             FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL
+           ),
+           dep_agg AS (
+             SELECT d,
+                    COUNT(DISTINCT CASE WHEN is_new = 0 THEN user_id END) as old_users,
+                    COALESCE(SUM(CASE WHEN is_new = 0 THEN amount END), 0) as old_total,
+                    COUNT(DISTINCT CASE WHEN is_new = 1 THEN user_id END) as new_users,
+                    COALESCE(SUM(CASE WHEN is_new = 1 THEN amount END), 0) as new_total,
+                    COUNT(DISTINCT user_id) as total_depositors,
+                    COALESCE(SUM(amount), 0) as total_deposit
+             FROM dep GROUP BY d
+           ),
+           first_dep AS (
+             SELECT user_id, MIN(date(create_time)) as first_dep_date
+             FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           wd AS (
+             SELECT w.user_id, date(w.create_time) as d, w.amount,
+                    CASE WHEN fd.first_dep_date = date(w.create_time) THEN 1 ELSE 0 END as is_new
+             FROM withdrawals w LEFT JOIN first_dep fd ON fd.user_id = w.user_id
+             WHERE CAST(w.status AS REAL) = 2 AND w.user_id IS NOT NULL
+           ),
+           wd_agg AS (
+             SELECT d,
+                    COUNT(DISTINCT CASE WHEN is_new = 0 THEN user_id END) as old_wd_users,
+                    COALESCE(SUM(CASE WHEN is_new = 0 THEN amount END), 0) as old_wd_total,
+                    COUNT(DISTINCT CASE WHEN is_new = 1 THEN user_id END) as new_wd_users,
+                    COALESCE(SUM(CASE WHEN is_new = 1 THEN amount END), 0) as new_wd_total
+             FROM wd GROUP BY d
+           )
+           SELECT da.d as date,
+                  da.old_users, (da.old_total / NULLIF(da.old_users, 0)) as avg_dep_old,
+                  da.new_users, (da.new_total / NULLIF(da.new_users, 0)) as avg_dep_new,
+                  COALESCE(wa.old_wd_users, 0) as old_wd_users,
+                  (COALESCE(wa.old_wd_total, 0) / NULLIF(wa.old_wd_users, 0)) as avg_wd_old,
+                  COALESCE(wa.new_wd_users, 0) as new_wd_users,
+                  (COALESCE(wa.new_wd_total, 0) / NULLIF(wa.new_wd_users, 0)) as avg_wd_new,
+                  da.total_deposit, da.total_depositors
+           FROM dep_agg da LEFT JOIN wd_agg wa ON wa.d = da.d
+           ORDER BY da.d DESC LIMIT ? OFFSET ?`
+        )
+        .bind(pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // Platform Analysis section 4, tab 2: New User 3-Day Retention. Cohort
+    // = users whose first-ever deposit landed on a given day; "retained" =
+    // made another COMPLETE deposit within the following 3 calendar days.
+    // Same cohort concept as Analytics' Day-1 Retention, extended to a
+    // 3-day window and grouped by cohort day instead of a single date.
+    if (url.pathname === "/api/dashboard/platform-analysis/new-user-retention" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+
+      const countRow = await env.daily_records_db
+        .prepare(`SELECT COUNT(DISTINCT date(create_time)) as c FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL`)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `WITH cohort AS (
+             SELECT user_id, date(create_time) as cohort_day FROM deposits
+             WHERE is_first_deposit = 1 AND user_id IS NOT NULL
+           ),
+           return_dep AS (
+             SELECT DISTINCT user_id, date(create_time) as dep_day, amount FROM deposits
+             WHERE status = 'COMPLETE' AND user_id IS NOT NULL
+           ),
+           retained AS (
+             SELECT c.cohort_day, c.user_id, MIN(r.amount) as first_return_amt
+             FROM cohort c
+             JOIN return_dep r ON r.user_id = c.user_id
+               AND date(r.dep_day) > c.cohort_day AND date(r.dep_day) <= date(c.cohort_day, '+3 day')
+             GROUP BY c.cohort_day, c.user_id
+           )
+           SELECT c.cohort_day as date, COUNT(DISTINCT c.user_id) as new_users,
+                  COUNT(DISTINCT ret.user_id) as retained_3d,
+                  (100.0 * COUNT(DISTINCT ret.user_id) / COUNT(DISTINCT c.user_id)) as retention_pct,
+                  COALESCE(SUM(ret.first_return_amt), 0) / NULLIF(COUNT(DISTINCT ret.user_id), 0) as avg_retained_deposit
+           FROM cohort c LEFT JOIN retained ret ON ret.cohort_day = c.cohort_day AND ret.user_id = c.user_id
+           GROUP BY c.cohort_day
+           ORDER BY c.cohort_day DESC LIMIT ? OFFSET ?`
+        )
+        .bind(pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
     // analytics view, grouped with Dashboard, not Configuration).
     if (url.pathname === "/master-stats" && request.method === "GET") {
