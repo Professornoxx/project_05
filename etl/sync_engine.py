@@ -39,7 +39,7 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # param count never left single digits, not one big multi-row VALUES
 # clause like this).
 CHUNK_SIZE = 12  # 8 params/row (wallet_details, now incl. game_name + source_name): 12*8=96, under the ~100 ceiling
-DEPOSIT_CHUNK_SIZE = 9  # deposits has 4 extra columns (channel, result_time, is_first_deposit, region): 9*10=90, under the ~100 ceiling
+DEPOSIT_CHUNK_SIZE = 9  # deposits has 5 extra columns (channel, marketing_channel, result_time, is_first_deposit, region): 9*11=99, under the ~100 ceiling
 WITHDRAW_CHUNK_SIZE = 11  # withdrawals has 3 extra columns (channel, review_time, callback_time): 11*9=99, same ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
@@ -119,10 +119,11 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
             key = common.record_key(row)
             fields = common.extract_common_fields(row)
             if is_deposit:
-                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 params.extend([
                     key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
-                    fields["channel"], fields["result_time"], fields["is_first_deposit"], fields["region"], now,
+                    fields["channel"], fields["marketing_channel"], fields["result_time"],
+                    fields["is_first_deposit"], fields["region"], now,
                 ])
             elif is_withdraw:
                 values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -144,11 +145,12 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
 
         if is_deposit:
             sql = (
-                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, result_time, is_first_deposit, region, synced_at) "
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, marketing_channel, result_time, is_first_deposit, region, synced_at) "
                 f"VALUES {','.join(values_sql)} "
                 "ON CONFLICT(record_key) DO UPDATE SET "
                 "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
                 "create_time = excluded.create_time, channel = excluded.channel, "
+                "marketing_channel = excluded.marketing_channel, "
                 "result_time = excluded.result_time, is_first_deposit = excluded.is_first_deposit, "
                 "region = excluded.region, synced_at = excluded.synced_at"
             )
