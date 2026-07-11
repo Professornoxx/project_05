@@ -1705,6 +1705,68 @@ export default {
       return Response.json({ date: anchorDate, by, rows: rows.results });
     }
 
+    // Platform Analysis section 3: Bonus Claim Report. "Bonus Category" =
+    // wallet_details.game_name (per explicit instruction: a non-blank
+    // Game Name marks a wallet_details row as bonus-eligible, and the
+    // Game Name value itself is the category — there is no separate
+    // marketing-campaign-name field anywhere in this export; see
+    // common.py's GAME_NAME_FIELD_CANDIDATES comment). A user "claims" a
+    // category once per day if they have any such row that day; claimed
+    // users = distinct users, total bonus = sum of those rows' amounts.
+    // "Deposited after" = of those claimers, how many made a COMPLETE
+    // deposit any time after their first claim of that category in the
+    // window (unbounded going forward — deposits data is naturally capped
+    // by its own 5-day rolling sync window regardless).
+    if (url.pathname === "/api/dashboard/platform-analysis/bonus-claims" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const period = url.searchParams.get("period") === "month" ? "month" : url.searchParams.get("period") === "week" ? "week" : "day";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const rangeStart = (() => {
+        const d = new Date(anchorDate + "T00:00:00Z");
+        if (period === "week") { d.setUTCDate(d.getUTCDate() - 6); return d.toISOString().slice(0, 10); }
+        if (period === "month") { d.setUTCDate(d.getUTCDate() - 29); return d.toISOString().slice(0, 10); }
+        return anchorDate;
+      })();
+
+      const CTE = `WITH bonus_claims AS (
+          SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
+          FROM wallet_details
+          WHERE game_name IS NOT NULL AND game_name != '' AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+          GROUP BY user_id, game_name
+        ),
+        category_totals AS (
+          SELECT category, COUNT(*) as claimed_users, COALESCE(SUM(claim_amount), 0) as total_bonus
+          FROM bonus_claims GROUP BY category
+        ),
+        dep_after AS (
+          SELECT bc.user_id, bc.category, SUM(d.amount) as dep_amt
+          FROM bonus_claims bc
+          JOIN deposits d ON d.user_id = bc.user_id AND d.status = 'COMPLETE' AND d.create_time > bc.first_claim_time
+          GROUP BY bc.user_id, bc.category
+        ),
+        dep_after_totals AS (
+          SELECT category, COUNT(*) as deposited_after, COALESCE(SUM(dep_amt), 0) as deposit_amount
+          FROM dep_after GROUP BY category
+        )`;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT ct.category, ct.claimed_users, ct.total_bonus,
+                  COALESCE(dat.deposited_after, 0) as deposited_after,
+                  COALESCE(dat.deposit_amount, 0) as deposit_amount,
+                  (100.0 * COALESCE(dat.deposited_after, 0) / ct.claimed_users) as pct
+           FROM category_totals ct LEFT JOIN dep_after_totals dat ON dat.category = ct.category
+           ORDER BY ct.claimed_users DESC LIMIT 50`
+        )
+        .bind(rangeStart, anchorDate)
+        .all();
+
+      return Response.json({ date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results });
+    }
+
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
     // analytics view, grouped with Dashboard, not Configuration).
     if (url.pathname === "/master-stats" && request.method === "GET") {
