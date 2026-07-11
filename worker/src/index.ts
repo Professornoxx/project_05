@@ -15,6 +15,7 @@ import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
+import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 
@@ -38,6 +39,20 @@ function requireAdmin(request: Request, env: Env, area: AuthArea): Response | nu
     return new Response("Unauthorized", { status: 401 });
   }
   return null;
+}
+
+// Same 14-bracket VIP ladder repeated as an inline CASE expression
+// throughout this file (see e.g. the reactivation/vip-upgrade endpoints) —
+// factored out here for the newer Platform Analysis endpoints so they don't
+// duplicate it a 9th time. `expr` is any SQL expression evaluating to a
+// deposit total, e.g. "total_deposit" or "u.total_deposit".
+function vipLevelCase(expr: string): string {
+  return `CASE
+    WHEN ${expr} < 100 THEN 0 WHEN ${expr} < 600 THEN 1 WHEN ${expr} < 5600 THEN 2
+    WHEN ${expr} < 15600 THEN 3 WHEN ${expr} < 95600 THEN 4 WHEN ${expr} < 295600 THEN 5
+    WHEN ${expr} < 795600 THEN 6 WHEN ${expr} < 1795600 THEN 7 WHEN ${expr} < 3795600 THEN 8
+    WHEN ${expr} < 8795600 THEN 9 WHEN ${expr} < 16795600 THEN 10 WHEN ${expr} < 28795600 THEN 11
+    WHEN ${expr} < 44795600 THEN 12 WHEN ${expr} < 69795600 THEN 13 ELSE 14 END`;
 }
 
 export default {
@@ -75,6 +90,8 @@ export default {
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML
+          : dashboardRoute.key === "platform-analysis"
+          ? PLATFORM_ANALYSIS_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -1408,6 +1425,140 @@ export default {
         dailyTable,
         monthlyLeaderboard,
       };
+    }
+
+    // Platform Analysis section 1, panel 1: Profit Users of the Day. Ranked
+    // by CURRENT wallet balance (users.user_balance), not today's activity —
+    // "who's sitting on the most money right now", same intent as the
+    // reference design. Today's deposit/withdrawal and last-activity dates
+    // are joined in per user so the table stays accurate even for users who
+    // didn't transact today. newOnly filters to accounts registered in the
+    // last 3 days (users.create_time) — the "3 Days New User" toggle.
+    if (url.pathname === "/api/dashboard/platform-analysis/profit-users" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const newOnly = url.searchParams.get("newOnly") === "1";
+      const threeDaysAgo = new Date(anchorDate + "T00:00:00Z");
+      threeDaysAgo.setUTCDate(threeDaysAgo.getUTCDate() - 3);
+      const threeDaysAgoStr = threeDaysAgo.toISOString().slice(0, 10);
+
+      const newUserFilter = newOnly ? `AND u.create_time >= ?` : "";
+      const newUserArgs = newOnly ? [threeDaysAgoStr] : [];
+
+      const CTE = `WITH today_dep AS (
+          SELECT user_id, SUM(amount) as dep FROM deposits
+          WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        today_wd AS (
+          SELECT user_id, SUM(amount) as wd FROM withdrawals
+          WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        last_dep AS (
+          SELECT user_id, MAX(create_time) as t FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+        ),
+        last_wd AS (
+          SELECT user_id, MAX(create_time) as t FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+        )`;
+
+      const countRow = await env.daily_records_db
+        .prepare(`SELECT COUNT(*) as c FROM users u WHERE u.user_balance IS NOT NULL ${newUserFilter}`)
+        .bind(...newUserArgs)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT u.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                  ${vipLevelCase("u.total_deposit")} as vip,
+                  COALESCE(td.dep, 0) as dep_today, u.user_balance as wallet_bal,
+                  COALESCE(tw.wd, 0) as wd_today,
+                  COALESCE(td.dep, 0) - COALESCE(tw.wd, 0) as net_dep,
+                  ld.t as last_dep, lw.t as last_wd
+           FROM users u
+           LEFT JOIN today_dep td ON td.user_id = u.user_id
+           LEFT JOIN today_wd tw ON tw.user_id = u.user_id
+           LEFT JOIN last_dep ld ON ld.user_id = u.user_id
+           LEFT JOIN last_wd lw ON lw.user_id = u.user_id
+           WHERE u.user_balance IS NOT NULL ${newUserFilter}
+           ORDER BY u.user_balance DESC LIMIT ? OFFSET ?`
+        )
+        .bind(anchorDate, anchorDate, ...newUserArgs, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        date: anchorDate,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // Platform Analysis section 1, panel 2: Suspicious Withdraw Users.
+    // Adapted from the reference design's "deposit-and-cash-out without
+    // genuine play" definition — the games-played signal in that design
+    // has no equivalent data source here (no game-session table exists),
+    // so this flags the two signals that ARE available: deposited Rs 1000+
+    // AND requested a withdrawal (status 0=In-Review/1=Processing/
+    // 2=Complete) within the same trailing 3-day window. Still the same
+    // underlying intent — deposit-then-immediately-withdraw pattern.
+    if (url.pathname === "/api/dashboard/platform-analysis/suspicious-withdrawals" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const threeDaysAgo = new Date(anchorDate + "T00:00:00Z");
+      threeDaysAgo.setUTCDate(threeDaysAgo.getUTCDate() - 3);
+      const threeDaysAgoStr = threeDaysAgo.toISOString().slice(0, 10);
+
+      const CTE = `WITH dep3d AS (
+          SELECT user_id, SUM(amount) as dep FROM deposits
+          WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+          GROUP BY user_id HAVING SUM(amount) >= 1000
+        ),
+        wd3d AS (
+          SELECT user_id, SUM(amount) as wd FROM withdrawals
+          WHERE date(create_time) BETWEEN ? AND ? AND CAST(status AS REAL) IN (0,1,2) AND user_id IS NOT NULL
+          GROUP BY user_id
+        ),
+        flagged AS (
+          SELECT d.user_id, d.dep, w.wd FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
+        )`;
+      const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM flagged`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                  ${vipLevelCase("u.total_deposit")} as vip, f.dep as deposit_3d, f.wd as withdraw_3d
+           FROM flagged f LEFT JOIN users u ON u.user_id = f.user_id
+           ORDER BY f.wd DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        date: anchorDate,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
