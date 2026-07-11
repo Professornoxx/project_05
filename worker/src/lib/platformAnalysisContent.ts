@@ -55,6 +55,16 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
   .pa-seg button { border: 1px solid #ddd; background: #fff; color: #333; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
   .pa-seg button.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
   .pa-section-gap { margin-top: 28px; }
+  .pa-panel-full { background: #fff; border-radius: 10px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-top: 20px; }
+  .pa-period-seg { display: flex; gap: 8px; margin-bottom: 14px; }
+  .pa-period-seg button { border: 1px solid #ddd; background: #fff; color: #333; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .pa-period-seg button.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+  .pa-date-pills { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .pa-date-pills button { border: 1px solid #ddd; background: #fff; color: #333; padding: 6px 14px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .pa-date-pills button.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+  .pa-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .pa-tabs button { border: 1px solid #ddd; background: #fff; color: #333; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .pa-tabs button.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
 </style>
 
 <div class="pa-header">
@@ -142,6 +152,29 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
         <tbody><tr><td colspan="5">Loading...</td></tr></tbody>
       </table>
     </div>
+  </div>
+</div>
+
+<div class="pa-panel-full">
+  <div class="pa-panel-head">
+    <div class="pa-panel-title"><span class="pa-icon orange">🏆</span>Bonus Claim Report</div>
+    <button class="pa-excel-btn" id="paExportBonus">📥 Excel</button>
+  </div>
+  <div class="pa-panel-sub">All bonuses claimed on the selected date (or rolling week/month), and % who deposited afterward.</div>
+  <div class="pa-period-seg" id="paBonusPeriodSeg">
+    <button class="active" data-period="day">Day</button>
+    <button data-period="week">Week</button>
+    <button data-period="month">Month</button>
+  </div>
+  <div class="pa-date-pills" id="paBonusDatePills"></div>
+  <div class="pa-tabs">
+    <button class="active">Wallet Bonuses</button>
+  </div>
+  <div class="pa-table-wrap">
+    <table class="pa-table" id="paBonusTable">
+      <thead><tr><th>Bonus category</th><th>Claimed users</th><th>Total bonus</th><th>Deposited after</th><th>Deposit amount</th><th>%</th></tr></thead>
+      <tbody><tr><td colspan="6">Loading...</td></tr></tbody>
+    </table>
   </div>
 </div>
 
@@ -297,6 +330,61 @@ document.getElementById('paProfitNext').onclick = () => { paState.profit.page++;
 document.getElementById('paSuspiciousPrev').onclick = () => { if (paState.suspicious.page > 1) { paState.suspicious.page--; paLoadSuspicious(); } };
 document.getElementById('paSuspiciousNext').onclick = () => { paState.suspicious.page++; paLoadSuspicious(); };
 
+const paBonusState = { period: 'day', date: null };
+const paBonusMonths = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+function paBonusDateStr(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function paBonusInitDatePills() {
+  const today = new Date();
+  paBonusState.date = paBonusDateStr(today);
+  const wrap = document.getElementById('paBonusDatePills');
+  wrap.innerHTML = '';
+  for (let i = 9; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const dateStr = paBonusDateStr(d);
+    const btn = document.createElement('button');
+    btn.textContent = d.getDate() + '-' + paBonusMonths[d.getMonth()].slice(0, 3);
+    if (dateStr === paBonusState.date) btn.classList.add('active');
+    btn.onclick = () => {
+      paBonusState.date = dateStr;
+      [...wrap.children].forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      paLoadBonus();
+    };
+    wrap.appendChild(btn);
+  }
+}
+async function paLoadBonus() {
+  const statusEl = document.getElementById('paStatus');
+  try {
+    const res = await fetch('/api/dashboard/platform-analysis/bonus-claims?period=' + paBonusState.period + '&date=' + paBonusState.date);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.querySelector('#paBonusTable tbody').innerHTML = (d.rows || []).map((r) =>
+      '<tr><td>' + r.category + '</td><td>' + Number(r.claimed_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.total_bonus) +
+      '</td><td>' + Number(r.deposited_after).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.deposit_amount) +
+      '</td><td>' + Number(r.pct || 0).toFixed(2) + '%</td></tr>'
+    ).join('') || '<tr><td colspan="6">No data</td></tr>';
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+document.querySelectorAll('#paBonusPeriodSeg button').forEach((btn) => {
+  btn.onclick = () => {
+    paBonusState.period = btn.dataset.period;
+    document.querySelectorAll('#paBonusPeriodSeg button').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('paBonusDatePills').style.display = paBonusState.period === 'day' ? 'flex' : 'none';
+    paLoadBonus();
+  };
+});
+paBonusInitDatePills();
+
 function paTableToCsv(tableEl) {
   const rows = [...tableEl.querySelectorAll('tr')];
   return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
@@ -312,10 +400,12 @@ document.getElementById('paExportProfit').onclick = () => paDownloadCsv(document
 document.getElementById('paExportSuspicious').onclick = () => paDownloadCsv(document.getElementById('paSuspiciousTable'), 'suspicious-withdraw-users.csv');
 document.getElementById('paExportChannel').onclick = () => paDownloadCsv(document.getElementById('paChannelTable'), 'channel-performance.csv');
 document.getElementById('paExportRevenue').onclick = () => paDownloadCsv(document.getElementById('paRevenueTable'), 'net-revenue-by-' + paRevenueState.by + '.csv');
+document.getElementById('paExportBonus').onclick = () => paDownloadCsv(document.getElementById('paBonusTable'), 'bonus-claim-report.csv');
 
 paLoadProfit();
 paLoadSuspicious();
 paLoadChannel();
 paLoadRevenue();
+paLoadBonus();
 </script>
 `;
