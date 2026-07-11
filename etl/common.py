@@ -18,7 +18,7 @@ ID_FIELD_CANDIDATES = [
 ]
 USER_ID_FIELD_CANDIDATES = ["userId", "UserId", "user_id", "uid", "用户ID", "用户id"]
 AMOUNT_FIELD_CANDIDATES = [
-    "amount", "money", "orderAmount", "WithDrawAmount", "ReceivedAmount", "总额", "金额",
+    "amount", "money", "orderAmount", "WithDrawAmount", "ReceivedAmount", "changeValue", "总额", "金额",
 ]
 STATUS_FIELD_CANDIDATES = [
     "status", "state", "COMPLETE is done",
@@ -72,6 +72,20 @@ USER_PHONE_FIELD_CANDIDATES = ["userPhone", "UserPhone"]
 USER_MARK_FIELD_CANDIDATES = ["mark"]
 MEMBER_LEVEL_FIELD_CANDIDATES = ["memberLevel"]
 WALLET_BALANCE_FIELD_CANDIDATES = ["changeAfter"]
+# wallet-only: "Game Name" confirmed present in the real wallet/detail export
+# header row (pulled live 2026-07-11) — populated with an actual slot/casino
+# game title for gameplay transactions, blank for everything else (deposits/
+# withdrawals mirrored into the wallet ledger, promo credits, etc.). Used by
+# the Platform Analysis "Bonus Claim Report": per explicit instruction, a
+# non-blank Game Name marks the row as a bonus-eligible source ("BONUS"),
+# and the Game Name value itself becomes the report's category — there is no
+# separate marketing-campaign-name field anywhere in this export (confirmed
+# by enumerating all 138 distinct Game Name values in a live sample; every
+# one is a real game title, e.g. "Aviator", "Vortex", none resemble a promo
+# name like "SPIN FREE"). This deliberately does not match a reference
+# design that assumed campaign names existed — that data isn't in this
+# export at all.
+GAME_NAME_FIELD_CANDIDATES = ["Game Name"]
 
 
 def extract_user_profile_fields(row: dict) -> dict:
@@ -133,6 +147,7 @@ def extract_common_fields(row: dict) -> dict:
         "callback_time": _coerce(_pick(row, CALLBACK_TIME_FIELD_CANDIDATES)),
         "is_first_deposit": _coerce(_pick(row, FIRST_DEPOSIT_FIELD_CANDIDATES)),
         "region": _coerce(_pick(row, REGION_FIELD_CANDIDATES)),
+        "game_name": _coerce(_pick(row, GAME_NAME_FIELD_CANDIDATES)),
     }
 
 
