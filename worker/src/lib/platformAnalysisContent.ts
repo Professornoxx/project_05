@@ -178,6 +178,28 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
   </div>
 </div>
 
+<div class="pa-panel-full">
+  <div class="pa-panel-head">
+    <div class="pa-panel-title"><span class="pa-icon blue">📈</span>New vs Old User Analysis — Last 35 Days</div>
+    <button class="pa-excel-btn" id="paExportNewOld">📥 Excel</button>
+  </div>
+  <div class="pa-panel-sub">Old = repeat depositors that day. New = users whose first-ever deposit landed that day. Covers every day daily_records.db has (rolling 35-day retention), so it starts wherever data first became available.</div>
+  <div class="pa-tabs" id="paNewOldTabs">
+    <button class="active" data-view="daily">Daily Breakdown</button>
+    <button data-view="retention">New User 3-Day Retention</button>
+  </div>
+  <div class="pa-table-wrap">
+    <table class="pa-table" id="paNewOldTable">
+      <thead id="paNewOldHead"><tr><th>Date</th><th>Old users</th><th>Avg dep (old)</th><th>New users</th><th>Avg dep (new)</th><th>Old WD users</th><th>Avg WD (old)</th><th>New WD users</th><th>Avg WD (new)</th><th>Total deposit</th><th>Total depositors</th></tr></thead>
+      <tbody><tr><td colspan="11">Loading...</td></tr></tbody>
+    </table>
+  </div>
+  <div class="pa-pager">
+    <span id="paNewOldPageLabel">Page 1 of 1</span>
+    <span><button id="paNewOldPrev">← Prev</button> <button id="paNewOldNext">Next →</button></span>
+  </div>
+</div>
+
 <div id="paStatus" style="font-size:13px;color:#888;"></div>
 
 <script>
@@ -385,6 +407,52 @@ document.querySelectorAll('#paBonusPeriodSeg button').forEach((btn) => {
 });
 paBonusInitDatePills();
 
+const paNewOldState = { view: 'daily', page: 1 };
+const paNewOldHeads = {
+  daily: '<th>Date</th><th>Old users</th><th>Avg dep (old)</th><th>New users</th><th>Avg dep (new)</th><th>Old WD users</th><th>Avg WD (old)</th><th>New WD users</th><th>Avg WD (new)</th><th>Total deposit</th><th>Total depositors</th>',
+  retention: '<th>Date</th><th>New users</th><th>Retained (3D)</th><th>Retention %</th><th>Avg retained deposit</th>',
+};
+async function paLoadNewOld() {
+  const statusEl = document.getElementById('paStatus');
+  try {
+    const endpoint = paNewOldState.view === 'daily' ? 'new-vs-old' : 'new-user-retention';
+    const res = await fetch('/api/dashboard/platform-analysis/' + endpoint + '?page=' + paNewOldState.page);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.getElementById('paNewOldHead').innerHTML = '<tr>' + paNewOldHeads[paNewOldState.view] + '</tr>';
+
+    document.querySelector('#paNewOldTable tbody').innerHTML = (d.rows || []).map((r) =>
+      paNewOldState.view === 'daily'
+        ? '<tr><td>' + r.date + '</td><td>' + Number(r.old_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_dep_old) +
+          '</td><td>' + Number(r.new_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_dep_new) +
+          '</td><td>' + Number(r.old_wd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_wd_old) +
+          '</td><td>' + Number(r.new_wd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_wd_new) +
+          '</td><td>' + paFmtInr(r.total_deposit) + '</td><td>' + Number(r.total_depositors).toLocaleString('en-IN') + '</td></tr>'
+        : '<tr><td>' + r.date + '</td><td>' + Number(r.new_users).toLocaleString('en-IN') + '</td><td>' + Number(r.retained_3d).toLocaleString('en-IN') +
+          '</td><td>' + Number(r.retention_pct || 0).toFixed(1) + '%</td><td>' + paFmtInr(r.avg_retained_deposit) + '</td></tr>'
+    ).join('') || '<tr><td colspan="11">No data</td></tr>';
+
+    document.getElementById('paNewOldPageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
+    document.getElementById('paNewOldPrev').disabled = d.page <= 1;
+    document.getElementById('paNewOldNext').disabled = d.page >= d.totalPages;
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+document.querySelectorAll('#paNewOldTabs button').forEach((btn) => {
+  btn.onclick = () => {
+    paNewOldState.view = btn.dataset.view;
+    paNewOldState.page = 1;
+    document.querySelectorAll('#paNewOldTabs button').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    paLoadNewOld();
+  };
+});
+document.getElementById('paNewOldPrev').onclick = () => { if (paNewOldState.page > 1) { paNewOldState.page--; paLoadNewOld(); } };
+document.getElementById('paNewOldNext').onclick = () => { paNewOldState.page++; paLoadNewOld(); };
+
 function paTableToCsv(tableEl) {
   const rows = [...tableEl.querySelectorAll('tr')];
   return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
@@ -401,11 +469,13 @@ document.getElementById('paExportSuspicious').onclick = () => paDownloadCsv(docu
 document.getElementById('paExportChannel').onclick = () => paDownloadCsv(document.getElementById('paChannelTable'), 'channel-performance.csv');
 document.getElementById('paExportRevenue').onclick = () => paDownloadCsv(document.getElementById('paRevenueTable'), 'net-revenue-by-' + paRevenueState.by + '.csv');
 document.getElementById('paExportBonus').onclick = () => paDownloadCsv(document.getElementById('paBonusTable'), 'bonus-claim-report.csv');
+document.getElementById('paExportNewOld').onclick = () => paDownloadCsv(document.getElementById('paNewOldTable'), 'new-vs-old-user-analysis-' + paNewOldState.view + '.csv');
 
 paLoadProfit();
 paLoadSuspicious();
 paLoadChannel();
 paLoadRevenue();
 paLoadBonus();
+paLoadNewOld();
 </script>
 `;
