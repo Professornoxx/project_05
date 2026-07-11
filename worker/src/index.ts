@@ -139,7 +139,7 @@ export default {
       const BASE = `FROM (
           SELECT user_id, total_deposit, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-          FROM users WHERE total_deposit IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
         )
         WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
           AND (next_level_min - total_deposit) BETWEEN 1 AND ?`;
@@ -198,7 +198,7 @@ export default {
           SELECT user_id, total_deposit, user_balance, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`;
 
@@ -269,6 +269,7 @@ export default {
       const CTE = `WITH first_deposit_users AS (
           SELECT user_id, MIN(region) as region
           FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
+            AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
           GROUP BY user_id
         ),
         deposit_agg AS (
@@ -344,7 +345,7 @@ export default {
           SELECT user_id, total_deposit, user_balance, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?`;
 
@@ -827,7 +828,7 @@ export default {
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?
@@ -931,7 +932,7 @@ export default {
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, total_deposit,
                  ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-          FROM users WHERE total_deposit IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
@@ -1017,7 +1018,9 @@ export default {
 
       const CTE = `WITH cohort AS (
           SELECT user_id, MIN(region) as region FROM deposits
-          WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL GROUP BY user_id
+          WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
+            AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
+          GROUP BY user_id
         ),
         today_dep AS (
           SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
@@ -1091,7 +1094,7 @@ export default {
 
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level
-          FROM users WHERE total_deposit IS NOT NULL
+          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE current_level BETWEEN ? AND ?
@@ -1468,7 +1471,7 @@ export default {
         )`;
 
       const countRow = await env.daily_records_db
-        .prepare(`SELECT COUNT(*) as c FROM users u WHERE u.user_balance IS NOT NULL ${newUserFilter}`)
+        .prepare(`SELECT COUNT(*) as c FROM users u WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}`)
         .bind(...newUserArgs)
         .first<{ c: number }>();
       const total = countRow?.c ?? 0;
@@ -1487,7 +1490,7 @@ export default {
            LEFT JOIN today_wd tw ON tw.user_id = u.user_id
            LEFT JOIN last_dep ld ON ld.user_id = u.user_id
            LEFT JOIN last_wd lw ON lw.user_id = u.user_id
-           WHERE u.user_balance IS NOT NULL ${newUserFilter}
+           WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}
            ORDER BY u.user_balance DESC LIMIT ? OFFSET ?`
         )
         .bind(anchorDate, anchorDate, ...newUserArgs, pageSize, (page - 1) * pageSize)
@@ -1546,6 +1549,7 @@ export default {
           FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
           LEFT JOIN games3d g ON g.user_id = d.user_id
           WHERE COALESCE(g.games, 0) < 50
+            AND d.user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
         )`;
       const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate];
 
@@ -2052,14 +2056,14 @@ export default {
       const topByBalance = await env.daily_records_db
         .prepare(
           `SELECT user_id, username, phone, city, user_balance, total_deposit, total_withdrawal
-           FROM users WHERE user_balance IS NOT NULL ORDER BY user_balance DESC LIMIT 10`
+           FROM users WHERE user_balance IS NOT NULL AND is_banned = 0 ORDER BY user_balance DESC LIMIT 10`
         )
         .all();
 
       const topByDeposit = await env.daily_records_db
         .prepare(
           `SELECT user_id, username, phone, city, total_deposit, deposit_count
-           FROM users WHERE total_deposit IS NOT NULL ORDER BY total_deposit DESC LIMIT 10`
+           FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0 ORDER BY total_deposit DESC LIMIT 10`
         )
         .all();
 
