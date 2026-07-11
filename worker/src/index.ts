@@ -1,7 +1,8 @@
 import type { Env } from "./lib/types";
 import { cachedJson } from "./lib/cache";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
-import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
+import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER, AGENT_NAV_ITEMS } from "./lib/dashboardShell";
+import { AGENT_SEARCH_USER_CONTENT_HTML } from "./lib/agentSearchUserContent";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
 import { DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML } from "./lib/depositHourlyAnalysisContent";
@@ -42,6 +43,21 @@ function requireAdmin(request: Request, env: Env, area: AuthArea): Response | nu
     return new Response("Unauthorized", { status: 401 });
   }
   return null;
+}
+
+// Shared by every endpoint the Agent Dashboard reuses from the admin
+// dashboard: admins (dashboard session) see everything (agentFilter null),
+// agents (agent session) are always scoped to their own assigned_agent —
+// never a client-supplied value, so an agent can't request another
+// agent's data by editing query params.
+async function requireDashboardOrAgentScope(
+  request: Request,
+  env: Env
+): Promise<{ agentFilter: string | null } | Response> {
+  if (isAuthed(request, env, "dashboard")) return { agentFilter: null };
+  const session = await getAgentSession(request, env);
+  if (session) return { agentFilter: session.displayName };
+  return new Response("Unauthorized", { status: 401 });
 }
 
 // Same 14-bracket VIP ladder repeated as an inline CASE expression
@@ -113,8 +129,9 @@ export default {
     // Agent is always "Unassigned" for now — no real agent-assignment data
     // source exists yet (see Search User page, blocked on the same gap).
     if (url.pathname === "/api/dashboard/action-center/vip-near-upgrade" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -141,14 +158,14 @@ export default {
       const BASE = `FROM (
           SELECT user_id, total_deposit, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
                  ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
-          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
+          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0 AND (? IS NULL OR assigned_agent = ?)
         )
         WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
           AND (next_level_min - total_deposit) BETWEEN 1 AND ?`;
 
       const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(minLevel, maxLevel, maxGap)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap)
         .first<{ c: number }>();
 
       const rows = await env.daily_records_db
@@ -159,7 +176,7 @@ export default {
            ${BASE}
            ORDER BY gap ASC LIMIT ? OFFSET ?`
         )
-        .bind(minLevel, maxLevel, maxGap, pageSize, (page - 1) * pageSize)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap, pageSize, (page - 1) * pageSize)
         .all();
 
       const total = countRow?.c ?? 0;
@@ -180,8 +197,9 @@ export default {
     // in real data (confirmed), user_balance is the populated column used
     // elsewhere on the dashboard (Home KPIs, Master Stats).
     if (url.pathname === "/api/dashboard/action-center/inactive-users" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -201,12 +219,13 @@ export default {
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
           FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
+            AND (? IS NULL OR assigned_agent = ?)
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`;
 
       const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(minLevel, maxLevel, minDays, maxDays)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays)
         .first<{ c: number }>();
 
       const rows = await env.daily_records_db
@@ -216,7 +235,7 @@ export default {
            ${BASE}
            ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
         )
-        .bind(minLevel, maxLevel, minDays, maxDays, pageSize, (page - 1) * pageSize)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays, pageSize, (page - 1) * pageSize)
         .all();
 
       const total = countRow?.c ?? 0;
@@ -251,8 +270,9 @@ export default {
     // separate, potentially stale lifetime figure) — same reasoning as
     // before the merge, just expressed as CTEs instead of JS objects.
     if (url.pathname === "/api/dashboard/action-center/yesterday-first-deposits" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
@@ -272,6 +292,7 @@ export default {
           SELECT user_id, MIN(region) as region
           FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
             AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
+            AND (? IS NULL OR user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?))
           GROUP BY user_id
         ),
         deposit_agg AS (
@@ -287,7 +308,7 @@ export default {
 
       const countRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM first_deposit_users`)
-        .bind(yesterdayStr)
+        .bind(yesterdayStr, agentFilter, agentFilter)
         .first<{ c: number }>();
 
       const rows = await env.daily_records_db
@@ -306,7 +327,7 @@ export default {
            LEFT JOIN users u ON u.user_id = f.user_id
            ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
         )
-        .bind(yesterdayStr, pageSize, (page - 1) * pageSize)
+        .bind(yesterdayStr, agentFilter, agentFilter, pageSize, (page - 1) * pageSize)
         .all();
 
       const total = countRow?.c ?? 0;
@@ -327,8 +348,9 @@ export default {
     // daily_records_db, unlike section 3's deposit totals) — same staleness
     // caveat flagged there applies here too.
     if (url.pathname === "/api/dashboard/action-center/active-users" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -348,12 +370,13 @@ export default {
                  ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
           FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
+            AND (? IS NULL OR assigned_agent = ?)
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?`;
 
       const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(minLevel, maxLevel, maxDays)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays)
         .first<{ c: number }>();
 
       const rows = await env.daily_records_db
@@ -362,7 +385,7 @@ export default {
            ${BASE}
            ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
         )
-        .bind(minLevel, maxLevel, maxDays, pageSize, (page - 1) * pageSize)
+        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays, pageSize, (page - 1) * pageSize)
         .all();
 
       const total = countRow?.c ?? 0;
@@ -383,8 +406,11 @@ export default {
     // giving false confidence the data was live. This surfaces the real
     // last SUCCESSFUL sync_runs timestamp per source instead.
     if (url.pathname === "/api/dashboard/last-sync" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      // Non-sensitive (just sync freshness, no user data) and rendered by
+      // the shared dashboard shell script — both dashboard and agent
+      // sessions need it to load without a 401.
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
 
       const rows = await env.daily_records_db
         .prepare(
@@ -415,41 +441,51 @@ export default {
     // 1=Processing, 2=Completed, 3=Rejected, 4=Failed — so withdraw totals
     // exclude 3 and 4 only.
     if (url.pathname === "/api/dashboard/home-stats" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const date = url.searchParams.get("date") || todayIST();
+      // When scoped to an agent, every count/sum below is restricted to
+      // that agent's assigned users via a user_id subquery — deposits/
+      // withdrawals/wallet_details have no assigned_agent column of their
+      // own, only users does.
+      const agentUserIds = `SELECT user_id FROM users WHERE assigned_agent = ?`;
+      const scopeClause = agentFilter ? `AND user_id IN (${agentUserIds})` : "";
+      const scopeBind = agentFilter ? [agentFilter] : [];
 
       const depositAgg = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE'`
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause}`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .first<{ total: number; orders: number; users: number }>();
 
       const withdrawAgg = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
-           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) IN (0,1,2)`
+           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) IN (0,1,2) ${scopeClause}`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .first<{ total: number; orders: number; users: number }>();
 
       const activeUsersRow = await env.daily_records_db
         .prepare(
           `SELECT COUNT(DISTINCT user_id) as c FROM (
-             SELECT user_id FROM deposits WHERE date(create_time) = ?
+             SELECT user_id FROM deposits WHERE date(create_time) = ? ${scopeClause}
              UNION
-             SELECT user_id FROM withdrawals WHERE date(create_time) = ?
+             SELECT user_id FROM withdrawals WHERE date(create_time) = ? ${scopeClause}
              UNION
-             SELECT user_id FROM wallet_details WHERE date(create_time) = ?
+             SELECT user_id FROM wallet_details WHERE date(create_time) = ? ${scopeClause}
            )`
         )
-        .bind(date, date, date)
+        .bind(date, ...scopeBind, date, ...scopeBind, date, ...scopeBind)
         .first<{ c: number }>();
 
-      const totalUsersRow = await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
+      const totalUsersRow = agentFilter
+        ? await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users WHERE assigned_agent = ?`).bind(agentFilter).first<{ c: number }>()
+        : await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
 
       return Response.json({
         date,
@@ -469,10 +505,13 @@ export default {
     // success-rate-by-range, and by-channel tables. All scoped to a single
     // date (defaults to today), same convention as home-stats.
     if (url.pathname === "/api/dashboard/deposit-analysis" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const date = url.searchParams.get("date") || todayIST();
+      const scopeClause = agentFilter ? `AND user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?)` : "";
+      const scopeBind = agentFilter ? [agentFilter] : [];
 
       const RANGE_CASE = `CASE
         WHEN amount >= 200 AND amount <= 299 THEN '200-299'
@@ -490,9 +529,9 @@ export default {
       const amountRange = await env.daily_records_db
         .prepare(
           `SELECT ${RANGE_CASE} as range, COUNT(*) as count, COUNT(DISTINCT user_id) as users, COALESCE(SUM(amount),0) as total
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' GROUP BY range`
+           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause} GROUP BY range`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const successByRange = await env.daily_records_db
@@ -500,9 +539,9 @@ export default {
           `SELECT ${RANGE_CASE} as range, COUNT(*) as total,
                   SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as completed,
                   AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_minutes
-           FROM deposits WHERE date(create_time) = ? GROUP BY range`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const byChannel = await env.daily_records_db
@@ -512,9 +551,9 @@ export default {
                   COUNT(DISTINCT CASE WHEN status = 'COMPLETE' THEN user_id END) as comp_users,
                   COALESCE(SUM(CASE WHEN status = 'COMPLETE' THEN amount ELSE 0 END),0) as comp_amount,
                   AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_mins
-           FROM deposits WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       return Response.json({
@@ -531,10 +570,13 @@ export default {
     // "Success" = status = 'COMPLETE', same strict definition as Deposit
     // Analysis section 2.
     if (url.pathname === "/api/dashboard/deposit-hourly-analysis" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const date = url.searchParams.get("date") || todayIST();
+      const scopeClause = agentFilter ? `AND user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?)` : "";
+      const scopeBind = agentFilter ? [agentFilter] : [];
 
       const RANGE_CASE = `CASE
         WHEN amount >= 200 AND amount <= 299 THEN '200-299'
@@ -553,34 +595,34 @@ export default {
         .prepare(
           `SELECT ${RANGE_CASE} as range, CAST(strftime('%H', create_time) AS INTEGER) as hour,
                   COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM deposits WHERE date(create_time) = ? GROUP BY range, hour`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range, hour`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const rangeTotals = await env.daily_records_db
         .prepare(
           `SELECT ${RANGE_CASE} as range, COUNT(*) as total_orders
-           FROM deposits WHERE date(create_time) = ? GROUP BY range`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const byChannelHour = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel, CAST(strftime('%H', create_time) AS INTEGER) as hour,
                   COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM deposits WHERE date(create_time) = ? GROUP BY channel, hour`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel, hour`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const channelTotals = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders
-           FROM deposits WHERE date(create_time) = ? GROUP BY channel ORDER BY total_orders DESC`
+           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       return Response.json({
@@ -603,10 +645,13 @@ export default {
     // column was added — older rows show as NULL and fall out of these
     // buckets, same caveat as channel on the section 3 tables.
     if (url.pathname === "/api/dashboard/withdrawal-analysis" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const date = url.searchParams.get("date") || todayIST();
+      const scopeClause = agentFilter ? `AND user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?)` : "";
+      const scopeBind = agentFilter ? [agentFilter] : [];
 
       const DURATION_BUCKET = (col: string) => `CASE
         WHEN ${col} IS NULL THEN NULL
@@ -621,20 +666,20 @@ export default {
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel,
                   ${DURATION_BUCKET(HOURS_BETWEEN("create_time", "review_time"))} as bucket, COUNT(*) as cnt
-           FROM withdrawals WHERE date(create_time) = ? AND review_time IS NOT NULL
+           FROM withdrawals WHERE date(create_time) = ? AND review_time IS NOT NULL ${scopeClause}
            GROUP BY channel, bucket`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       const channelCompletionTime = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel,
                   ${DURATION_BUCKET(HOURS_BETWEEN("review_time", "callback_time"))} as bucket, COUNT(*) as cnt
-           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND callback_time IS NOT NULL AND review_time IS NOT NULL
+           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND callback_time IS NOT NULL AND review_time IS NOT NULL ${scopeClause}
            GROUP BY channel, bucket`
         )
-        .bind(date)
+        .bind(date, ...scopeBind)
         .all();
 
       // Live snapshot (not date-scoped): every currently-open order,
@@ -647,9 +692,10 @@ export default {
              WHEN h < 6 THEN '3-6h' WHEN h < 12 THEN '6-12h' WHEN h < 24 THEN '12-24h' ELSE '>24h' END as bucket,
              COUNT(*) as cnt, COALESCE(SUM(amount),0) as amt
            FROM (SELECT amount, ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
-                 FROM withdrawals WHERE CAST(status AS REAL) = 1)
+                 FROM withdrawals WHERE CAST(status AS REAL) = 1 ${scopeClause})
            WHERE h >= 3 GROUP BY bucket`
         )
+        .bind(...scopeBind)
         .all();
 
       const inReviewAging = await env.daily_records_db
@@ -657,9 +703,10 @@ export default {
           `SELECT CASE WHEN h < 3 THEN '1-3h' WHEN h < 6 THEN '3-6h' ELSE '>6h' END as bucket,
                   COUNT(*) as cnt, COALESCE(SUM(amount),0) as amt
            FROM (SELECT amount, ${HOURS_BETWEEN("create_time", "datetime('now')")} as h
-                 FROM withdrawals WHERE CAST(status AS REAL) = 0)
+                 FROM withdrawals WHERE CAST(status AS REAL) = 0 ${scopeClause})
            WHERE h >= 1 GROUP BY bucket`
         )
+        .bind(...scopeBind)
         .all();
 
       // Withdrawal Processing — Amount Range: currently-processing orders
@@ -679,10 +726,11 @@ export default {
              SELECT ${AMOUNT_RANGE} as range,
                     CASE WHEN h < 6 THEN '3-6H' WHEN h < 12 THEN '6-12H' WHEN h < 24 THEN '12-24H' ELSE '>24H' END as bucket
              FROM (SELECT amount, ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} as h
-                   FROM withdrawals WHERE CAST(status AS REAL) = 1)
+                   FROM withdrawals WHERE CAST(status AS REAL) = 1 ${scopeClause})
              WHERE h >= 3
            ) GROUP BY range, bucket`
         )
+        .bind(...scopeBind)
         .all();
 
       const rangeTotalsForProcessing = await env.daily_records_db
@@ -690,9 +738,10 @@ export default {
           `SELECT range, COUNT(*) as total_orders, COALESCE(SUM(amount),0) as total_amount FROM (
              SELECT amount, ${AMOUNT_RANGE} as range
              FROM withdrawals WHERE CAST(status AS REAL) = 1
-               AND ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} >= 3
+               AND ${HOURS_BETWEEN("COALESCE(review_time, create_time)", "datetime('now')")} >= 3 ${scopeClause}
            ) GROUP BY range`
         )
+        .bind(...scopeBind)
         .all();
 
       const completedLast4Days = await env.daily_records_db
@@ -702,10 +751,10 @@ export default {
                   SUM(CASE WHEN ${HOURS_BETWEEN("create_time", "callback_time")} >= 4 THEN 1 ELSE 0 END) as over4h
            FROM withdrawals
            WHERE CAST(status AS REAL) = 2 AND callback_time IS NOT NULL
-             AND date(create_time) BETWEEN date(?, '-6 days') AND date(?)
+             AND date(create_time) BETWEEN date(?, '-6 days') AND date(?) ${scopeClause}
            GROUP BY d ORDER BY d`
         )
-        .bind(date, date)
+        .bind(date, date, ...scopeBind)
         .all<{ d: string; under4h: number; over4h: number }>();
 
       // Always return all 7 day-slots, zero-filling any day with no rows —
@@ -745,8 +794,9 @@ export default {
     // populated); deposits.region is a newer, sparser fallback for rows
     // synced after that column existed.
     if (url.pathname === "/api/dashboard/analytics/region-vip-deposit" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const date = url.searchParams.get("date") || todayIST();
 
@@ -760,6 +810,7 @@ export default {
       const CTE = `WITH day_dep AS (
           SELECT user_id, SUM(amount) as day_deposit, MIN(region) as region
           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+            AND (? IS NULL OR user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?))
           GROUP BY user_id
         ),
         merged AS (
@@ -774,7 +825,7 @@ export default {
           `${CTE} SELECT region, SUM(day_deposit) as total, COUNT(*) as users
            FROM merged GROUP BY region ORDER BY total DESC LIMIT 10`
         )
-        .bind(date)
+        .bind(date, agentFilter, agentFilter)
         .all<{ region: string; total: number; users: number }>();
 
       const byVipLevelRes = await env.daily_records_db
@@ -782,7 +833,7 @@ export default {
           `${CTE} SELECT vip_level as level, SUM(day_deposit) as total, COUNT(*) as users
            FROM merged GROUP BY vip_level ORDER BY vip_level ASC`
         )
-        .bind(date)
+        .bind(date, agentFilter, agentFilter)
         .all<{ level: number; total: number; users: number }>();
 
       return Response.json({ date, topRegions: topRegionsRes.results, byVipLevel: byVipLevelRes.results });
@@ -807,8 +858,9 @@ export default {
     // database, so this is CTEs + JOINs instead of a batched candidate-ID
     // lookup merged in memory.
     if (url.pathname === "/api/dashboard/analytics/reactivation" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -831,6 +883,7 @@ export default {
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
           FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
+            AND (? IS NULL OR assigned_agent = ?)
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?
@@ -843,7 +896,7 @@ export default {
           SELECT DISTINCT user_id FROM deposits
           WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
         )`;
-      const cteArgs = [minLevel, maxLevel, minDays, maxDays, anchorDate, threeDaysAgoStr, anchorDate];
+      const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays, anchorDate, threeDaysAgoStr, anchorDate];
 
       const cohortCountRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
@@ -904,8 +957,9 @@ export default {
     // same bracket CASE expression is reused with its input swapped to
     // "total_deposit + today's deposit" via levelCaseFor().
     if (url.pathname === "/api/dashboard/analytics/vip-upgrade" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -935,6 +989,7 @@ export default {
           SELECT user_id, assigned_agent as agent, total_deposit,
                  ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
           FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
+            AND (? IS NULL OR assigned_agent = ?)
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
@@ -948,7 +1003,7 @@ export default {
           SELECT user_id, SUM(amount) as amt FROM deposits
           WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
         )`;
-      const cteArgs = [minLevel, maxLevel, maxGap, anchorDate, threeDaysAgoStr, anchorDate];
+      const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, maxGap, anchorDate, threeDaysAgoStr, anchorDate];
       const VIP_AFTER_TODAY = levelCaseFor("(c.total_deposit + t.day_deposit)");
       const VIP_AFTER_3DAY = levelCaseFor("(c.total_deposit + t3.amt)");
 
@@ -1008,8 +1063,9 @@ export default {
     // and date-anchoring as Action Center's Yesterday First Deposit Users).
     // "Deposited again" = any COMPLETE deposit from that same cohort today.
     if (url.pathname === "/api/dashboard/analytics/day1-retention" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
@@ -1022,13 +1078,14 @@ export default {
           SELECT user_id, MIN(region) as region FROM deposits
           WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
             AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
+            AND (? IS NULL OR user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?))
           GROUP BY user_id
         ),
         today_dep AS (
           SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
         )`;
-      const cteArgs = [yesterdayStr, anchorDate];
+      const cteArgs = [yesterdayStr, agentFilter, agentFilter, anchorDate];
 
       const cohortCountRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort`)
@@ -1078,8 +1135,9 @@ export default {
     // in Action Center (which additionally requires recent activity).
     // "Deposited today" = any COMPLETE deposit from that cohort today.
     if (url.pathname === "/api/dashboard/analytics/premium-active" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
@@ -1097,6 +1155,7 @@ export default {
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level
           FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
+            AND (? IS NULL OR assigned_agent = ?)
         ),
         cohort_filtered AS (
           SELECT * FROM cohort WHERE current_level BETWEEN ? AND ?
@@ -1105,7 +1164,7 @@ export default {
           SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
         )`;
-      const cteArgs = [minLevel, maxLevel, anchorDate];
+      const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, anchorDate];
 
       const cohortCountRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
@@ -1159,8 +1218,9 @@ export default {
     // Incentive bracket amounts are NOT computed here, only displayed as
     // static reference text — no payout logic exists yet.
     if (url.pathname === "/api/dashboard/performance" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const anchorDate = url.searchParams.get("date") || todayIST();
       const rangeParam = url.searchParams.get("range") || "today";
@@ -1168,7 +1228,17 @@ export default {
       // cache the whole computed response for a short window. Source data
       // only changes on sync (roughly hourly), so this trades negligible
       // staleness for a big cut in repeat-load cost. See lib/cache.ts.
+      // The underlying query already groups by agent, so scoping for an
+      // agent session is just filtering the shared cached payload down to
+      // that agent's own rows — no need to re-run the SQL per agent.
       const payload = await cachedJson(env, `performance:${anchorDate}:${rangeParam}`, () => computePerformancePayload(env, anchorDate, rangeParam));
+      if (agentFilter) {
+        return Response.json({
+          ...payload,
+          dailyTable: payload.dailyTable.filter((r: { agent: string }) => r.agent === agentFilter),
+          monthlyLeaderboard: payload.monthlyLeaderboard.filter((r: { agent: string }) => r.agent === agentFilter),
+        });
+      }
       return Response.json(payload);
     }
     async function computePerformancePayload(env: Env, anchorDate: string, rangeParam: string) {
@@ -1944,8 +2014,9 @@ export default {
     // is meant to be, and the blast radius here is one row, not the whole
     // sync pipeline.
     if (url.pathname === "/api/dashboard/search-user" && request.method === "GET") {
-      const authFail = requireAdmin(request, env, "dashboard");
-      if (authFail) return authFail;
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
 
       const userId = url.searchParams.get("userId");
       if (!userId || !/^\d+$/.test(userId)) {
@@ -1956,6 +2027,9 @@ export default {
       // Always returns the user regardless of is_banned — this page IS the
       // tool admins use to find and unban someone, so hiding a banned
       // user from its own direct-ID lookup would make unbanning impossible.
+      // Agent sessions additionally require the user to be assigned to
+      // them — an agent searching another agent's user_id must get the
+      // same "not found" response as searching a nonexistent one.
       const user = await env.daily_records_db
         .prepare(
           `SELECT u.*, ${vipLevelCase("u.total_deposit")} as vip_level,
@@ -1965,9 +2039,9 @@ export default {
                   (SELECT MAX(create_time) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as last_withdrawal_time,
                   (SELECT COUNT(*) FROM deposits WHERE user_id = u.user_id AND status = 'COMPLETE') as deposit_txn_count,
                   (SELECT COUNT(*) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as withdrawal_txn_count
-           FROM users u WHERE u.user_id = ?`
+           FROM users u WHERE u.user_id = ? AND (? IS NULL OR u.assigned_agent = ?)`
         )
-        .bind(anchorDate, anchorDate, userId)
+        .bind(anchorDate, anchorDate, userId, agentFilter, agentFilter)
         .first();
 
       if (!user) {
@@ -2168,25 +2242,47 @@ export default {
       return new Response(null, { status: 204, headers: { "Set-Cookie": clearAgentSessionCookieHeader() } });
     }
 
-    if (url.pathname === "/agent" && request.method === "GET") {
+    // Agent Dashboard pages — same shell/content components as the admin
+    // dashboard (see DASHBOARD_ROUTES above), just gated on an agent
+    // session instead of the dashboard shared-key session, with a
+    // restricted 5-item nav (no Platform Analysis) and its own login
+    // redirect. The underlying content HTML fetches the SAME
+    // /api/dashboard/* endpoints — those endpoints are what actually do
+    // the per-agent data scoping (see requireDashboardOrAgentScope), so
+    // no separate agent API surface is needed except for Search User
+    // (agentSearchUserContent.ts), which drops the Reassign/Ban cards
+    // entirely since agents don't get those actions.
+    const AGENT_ROUTES: Record<string, { key: string; title: string }> = {
+      "/agent": { key: "home", title: "Home" },
+      "/agent/action-center": { key: "action-center", title: "Action Center" },
+      "/agent/performance": { key: "performance", title: "Performance" },
+      "/agent/analytics": { key: "analytics", title: "Analytics" },
+      "/agent/search-user": { key: "search-user", title: "Search User" },
+    };
+    const agentRoute = AGENT_ROUTES[url.pathname];
+    if (agentRoute && request.method === "GET") {
       const session = await getAgentSession(request, env);
       if (!session) {
         return new Response(null, { status: 302, headers: { Location: "/agent/login" } });
       }
+      const content =
+        agentRoute.key === "home"
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
+          : agentRoute.key === "action-center"
+          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          : agentRoute.key === "analytics"
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
+          : agentRoute.key === "performance"
+          ? PERFORMANCE_CONTENT_HTML
+          : agentRoute.key === "search-user"
+          ? AGENT_SEARCH_USER_CONTENT_HTML
+          : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
-        `<!DOCTYPE html><html><head><meta charset="UTF-8" /><title>Agent Dashboard</title><meta name="robots" content="noindex" /></head>
-         <body style="font-family:system-ui,sans-serif;max-width:400px;margin:80px auto;">
-         <h1>Welcome, ${session.displayName}</h1>
-         <p>Your scoped dashboard is coming soon.</p>
-         <a href="#" id="logoutLink">Log out</a>
-         <script>
-           document.getElementById('logoutLink').onclick = async (e) => {
-             e.preventDefault();
-             await fetch('/agent/logout', { method: 'POST' });
-             location.href = '/agent/login';
-           };
-         </script>
-         </body></html>`,
+        renderDashboardShell(agentRoute.key, agentRoute.title, content, {
+          navItems: AGENT_NAV_ITEMS,
+          logoutUrl: "/agent/logout",
+          loginUrl: "/agent/login",
+        }),
         { headers: { "content-type": "text/html; charset=utf-8" } }
       );
     }
