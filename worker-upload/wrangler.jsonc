@@ -41,7 +41,19 @@
     // Daily cleanup (purges sync_runs entries older than 35 days) moved
     // here from sync-worker — it's a write operation, belongs with the
     // rest of the admin/write surface.
-    "crons": ["0 3 * * *"]
+    //
+    // "0 * * * *" (hourly) is a reliability backup for etl-hourly.yml's
+    // own `schedule:` trigger — GitHub silently drops/delays scheduled
+    // workflow runs under load (observed: a multi-hour gap with zero
+    // schedule-triggered runs, only manual workflow_dispatch ones).
+    // Cloudflare Cron Triggers don't have that failure mode, so this
+    // just calls the same triggerGithubSync() dispatch the manual
+    // "Save & Sync" button uses, once an hour, as a guaranteed nudge.
+    // If GitHub's own schedule ALSO fires in the same hour, the
+    // workflow's own concurrency: {group: db-ingest} guard (see
+    // etl-hourly.yml) queues the second run instead of racing it, so
+    // double-dispatch is safe, just occasionally redundant.
+    "crons": ["0 3 * * *", "0 * * * *"]
   },
 
   "vars": {

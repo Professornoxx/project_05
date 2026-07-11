@@ -10,6 +10,7 @@ import type { ChunkRow } from "../../worker/src/lib/chunkedUpsert";
 import { generateSalt, hashPassword } from "../../worker/src/lib/agentAuth";
 
 const DAILY_CLEANUP_CRON = "0 3 * * *";
+const HOURLY_SYNC_BACKUP_CRON = "0 * * * *";
 const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
 
 // Used by JSON API routes: 401 with no redirect, for programmatic/curl
@@ -79,6 +80,14 @@ export default {
         cleanupOldSyncRuns(env)
           .then((result) => console.log("cleanupOldSyncRuns:", JSON.stringify(result)))
           .catch((err) => console.error("cleanupOldSyncRuns failed:", err))
+      );
+    }
+
+    if (controller.cron === HOURLY_SYNC_BACKUP_CRON) {
+      ctx.waitUntil(
+        triggerGithubSync(env)
+          .then((result) => console.log("hourly sync backup dispatch:", JSON.stringify(result)))
+          .catch((err) => console.error("hourly sync backup dispatch failed:", err))
       );
     }
   },
