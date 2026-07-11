@@ -1501,13 +1501,17 @@ export default {
     }
 
     // Platform Analysis section 1, panel 2: Suspicious Withdraw Users.
-    // Adapted from the reference design's "deposit-and-cash-out without
-    // genuine play" definition — the games-played signal in that design
-    // has no equivalent data source here (no game-session table exists),
-    // so this flags the two signals that ARE available: deposited Rs 1000+
-    // AND requested a withdrawal (status 0=In-Review/1=Processing/
-    // 2=Complete) within the same trailing 3-day window. Still the same
-    // underlying intent — deposit-then-immediately-withdraw pattern.
+    // Matches the reference design's "deposit-and-cash-out without genuine
+    // play" definition. There's no dedicated game-session table, but
+    // wallet_details (the "detail export" source) turns out to be a
+    // per-event transaction log — confirmed live: active users log
+    // hundreds to thousands of wallet_details rows/day, while a handful of
+    // flagged deposit+withdraw users had as few as 5 in the same window.
+    // COUNT(*) of wallet_details rows per user in the window is used as
+    // the games-played count. Flags: deposited Rs 1000+ AND requested a
+    // withdrawal (status 0=In-Review/1=Processing/2=Complete) AND fewer
+    // than 50 wallet_details rows, all within the same trailing 3-day
+    // window.
     if (url.pathname === "/api/dashboard/platform-analysis/suspicious-withdrawals" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -1529,10 +1533,18 @@ export default {
           WHERE date(create_time) BETWEEN ? AND ? AND CAST(status AS REAL) IN (0,1,2) AND user_id IS NOT NULL
           GROUP BY user_id
         ),
+        games3d AS (
+          SELECT user_id, COUNT(*) as games FROM wallet_details
+          WHERE date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+          GROUP BY user_id
+        ),
         flagged AS (
-          SELECT d.user_id, d.dep, w.wd FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
+          SELECT d.user_id, d.dep, w.wd, COALESCE(g.games, 0) as games
+          FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
+          LEFT JOIN games3d g ON g.user_id = d.user_id
+          WHERE COALESCE(g.games, 0) < 50
         )`;
-      const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate];
+      const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate];
 
       const countRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM flagged`)
@@ -1544,7 +1556,7 @@ export default {
         .prepare(
           `${CTE}
            SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  ${vipLevelCase("u.total_deposit")} as vip, f.dep as deposit_3d, f.wd as withdraw_3d
+                  ${vipLevelCase("u.total_deposit")} as vip, f.dep as deposit_3d, f.wd as withdraw_3d, f.games as games_3d
            FROM flagged f LEFT JOIN users u ON u.user_id = f.user_id
            ORDER BY f.wd DESC LIMIT ? OFFSET ?`
         )

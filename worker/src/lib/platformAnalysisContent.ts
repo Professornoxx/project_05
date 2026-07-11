@@ -70,11 +70,11 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
       <div class="pa-panel-title"><span class="pa-icon red">⚠️</span>Suspicious Withdraw Users</div>
       <button class="pa-excel-btn" id="paExportSuspicious">📥 Excel</button>
     </div>
-    <div class="pa-panel-sub">Deposited ₹1,000+ AND requested a withdrawal (In-Review/Processing/Complete) within the last 3 days — deposit-and-cash-out pattern.</div>
+    <div class="pa-panel-sub">Deposited ₹1,000+ AND requested a withdrawal (In-Review/Processing/Complete) within the last 3 days, while playing fewer than 50 games in that same window — deposit-and-cash-out without genuine play.</div>
     <div class="pa-table-wrap">
       <table class="pa-table" id="paSuspiciousTable">
-        <thead><tr><th>User ID</th><th>Agent</th><th>VIP</th><th>Deposit (3D)</th><th>Withdraw (3D)</th></tr></thead>
-        <tbody><tr><td colspan="5">Loading...</td></tr></tbody>
+        <thead><tr><th>User ID</th><th>Agent</th><th>VIP</th><th>Deposit (3D)</th><th>Withdraw (3D)</th><th>Games played (3D)</th></tr></thead>
+        <tbody><tr><td colspan="6">Loading...</td></tr></tbody>
       </table>
     </div>
     <div class="pa-pager">
@@ -137,8 +137,9 @@ async function paLoadSuspicious() {
 
     document.querySelector('#paSuspiciousTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.vip +
-      '</td><td>' + paFmtInr(r.deposit_3d) + '</td><td>' + paFmtInr(r.withdraw_3d) + '</td></tr>'
-    ).join('') || '<tr><td colspan="5">No data</td></tr>';
+      '</td><td>' + paFmtInr(r.deposit_3d) + '</td><td>' + paFmtInr(r.withdraw_3d) +
+      '</td><td>' + Number(r.games_3d || 0).toLocaleString('en-IN') + '</td></tr>'
+    ).join('') || '<tr><td colspan="6">No data</td></tr>';
 
     document.getElementById('paSuspiciousPageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
     document.getElementById('paSuspiciousPrev').disabled = d.page <= 1;
