@@ -20,10 +20,22 @@
     }
   ],
 
-  // No KV, cron triggers, or export/self-fetch vars here anymore — this
-  // Worker is read-only dashboard serving now. Everything that writes to
-  // daily_records_db (config saves, uploads, manual sync/cleanup triggers,
-  // and the daily cleanup cron) moved to ../worker-upload — see that
-  // project's wrangler.jsonc for why.
+  // No cron triggers or export/self-fetch vars here — this Worker is
+  // read-only dashboard serving. Everything that writes to daily_records_db
+  // (config saves, uploads, manual sync/cleanup triggers, the daily cleanup
+  // cron) moved to ../worker-upload — see that project's wrangler.jsonc.
+  //
+  // SYNC_KV is bound here too (same namespace as upload-worker) purely as
+  // a response cache for expensive aggregate endpoints like
+  // /api/dashboard/performance — see lib/cache.ts. Keys are prefixed
+  // "cache:" to stay out of upload-worker's "config:" / execution-dedup
+  // key space; this Worker never writes config data, only cache entries.
+  "kv_namespaces": [
+    {
+      "binding": "SYNC_KV",
+      "id": "8e7ee32e4f4f4816ac3df77f84912d15"
+    }
+  ],
+
   "vars": {}
 }

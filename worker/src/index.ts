@@ -1,4 +1,5 @@
 import type { Env } from "./lib/types";
+import { cachedJson } from "./lib/cache";
 import { MASTER_STATS_PAGE_HTML } from "./lib/masterStatsPage";
 import { renderDashboardShell, EMPTY_CONTENT_PLACEHOLDER } from "./lib/dashboardShell";
 import { HOME_CONTENT_HTML } from "./lib/homeContent";
@@ -1138,6 +1139,14 @@ export default {
 
       const anchorDate = url.searchParams.get("date") || todayIST();
       const rangeParam = url.searchParams.get("range") || "today";
+      // ~8 grouped SQL queries per load (4 KPIs x rangeKPIs/monthKPIs) —
+      // cache the whole computed response for a short window. Source data
+      // only changes on sync (roughly hourly), so this trades negligible
+      // staleness for a big cut in repeat-load cost. See lib/cache.ts.
+      const payload = await cachedJson(env, `performance:${anchorDate}:${rangeParam}`, () => computePerformancePayload(env, anchorDate, rangeParam));
+      return Response.json(payload);
+    }
+    async function computePerformancePayload(env: Env, anchorDate: string, rangeParam: string) {
       const rangeStart = (() => {
         const d = new Date(anchorDate + "T00:00:00Z");
         if (rangeParam === "yesterday") { d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
@@ -1390,7 +1399,7 @@ export default {
         .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
         .slice(0, 3);
 
-      return Response.json({
+      return {
         date: anchorDate,
         range: rangeParam,
         rangeStart,
@@ -1398,7 +1407,7 @@ export default {
         monthStart,
         dailyTable,
         monthlyLeaderboard,
-      });
+      };
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
