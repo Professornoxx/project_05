@@ -7,6 +7,7 @@ import { renderLoginPage } from "../../worker/src/lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader } from "../../worker/src/lib/auth";
 import { cleanupOldSyncRuns } from "../../worker/src/lib/cleanup";
 import type { ChunkRow } from "../../worker/src/lib/chunkedUpsert";
+import { generateSalt, hashPassword } from "../../worker/src/lib/agentAuth";
 
 const DAILY_CLEANUP_CRON = "0 3 * * *";
 const CHUNK_WRITE_TABLES = new Set(["deposits", "withdrawals", "wallet_details"]);
@@ -255,6 +256,108 @@ export default {
       const buffer = await file.arrayBuffer();
       const uploadResult = await handleAgentUpload(buffer, env, file.name);
       return Response.json({ upload: uploadResult });
+    }
+
+    // Agent login account management (Config page's "Agent Accounts"
+    // section) — the admin-side setup step before any agent can actually
+    // log in. display_name must exactly match a real users.assigned_agent
+    // value (the dropdown below is populated from that same column) since
+    // it's the join key every agent-scoped query will filter on.
+    if (url.pathname === "/api/config/agent-names" && request.method === "GET") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const rows = await env.daily_records_db
+        .prepare(`SELECT DISTINCT assigned_agent FROM users WHERE assigned_agent IS NOT NULL AND assigned_agent != '' ORDER BY assigned_agent`)
+        .all<{ assigned_agent: string }>();
+      return Response.json({ agentNames: rows.results.map((r) => r.assigned_agent) });
+    }
+
+    if (url.pathname === "/api/config/agent-accounts" && request.method === "GET") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const rows = await env.daily_records_db
+        .prepare(`SELECT agent_id, display_name, login_username, is_active, created_at FROM agent_accounts ORDER BY created_at DESC`)
+        .all();
+      return Response.json({ accounts: rows.results });
+    }
+
+    if (url.pathname === "/api/config/agent-accounts" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const body = (await request.json()) as { displayName?: string; username?: string; password?: string };
+      if (!body.displayName || !body.username || !body.password) {
+        return Response.json({ error: "displayName, username, and password are all required" }, { status: 400 });
+      }
+      if (body.password.length < 8) {
+        return Response.json({ error: "password must be at least 8 characters" }, { status: 400 });
+      }
+      // Guard against a typo'd display_name that doesn't match any real
+      // assigned_agent value — such an account would log in fine but every
+      // scoped query would return zero rows, a confusing silent failure.
+      const matchingAgent = await env.daily_records_db
+        .prepare(`SELECT 1 FROM users WHERE assigned_agent = ? LIMIT 1`)
+        .bind(body.displayName)
+        .first();
+      if (!matchingAgent) {
+        return Response.json({ error: `No users currently have "${body.displayName}" as their assigned agent — check for typos` }, { status: 400 });
+      }
+      const salt = generateSalt();
+      const hash = await hashPassword(body.password, salt);
+      try {
+        await env.daily_records_db
+          .prepare(
+            `INSERT INTO agent_accounts (display_name, login_username, password_hash, password_salt, is_active, created_at)
+             VALUES (?, ?, ?, ?, 1, ?)`
+          )
+          .bind(body.displayName, body.username, hash, salt, new Date().toISOString())
+          .run();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("UNIQUE")) {
+          return Response.json({ error: `Username "${body.username}" is already taken` }, { status: 409 });
+        }
+        throw err;
+      }
+      return Response.json({ saved: true });
+    }
+
+    if (url.pathname === "/api/config/agent-accounts/toggle" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const body = (await request.json()) as { agentId?: number; isActive?: boolean };
+      if (body.agentId === undefined || body.isActive === undefined) {
+        return Response.json({ error: "agentId and isActive are required" }, { status: 400 });
+      }
+      const result = await env.daily_records_db
+        .prepare(`UPDATE agent_accounts SET is_active = ? WHERE agent_id = ?`)
+        .bind(body.isActive ? 1 : 0, body.agentId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No account found with that ID" }, { status: 404 });
+      }
+      return Response.json({ saved: true });
+    }
+
+    if (url.pathname === "/api/config/agent-accounts/reset-password" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const body = (await request.json()) as { agentId?: number; password?: string };
+      if (!body.agentId || !body.password) {
+        return Response.json({ error: "agentId and password are required" }, { status: 400 });
+      }
+      if (body.password.length < 8) {
+        return Response.json({ error: "password must be at least 8 characters" }, { status: 400 });
+      }
+      const salt = generateSalt();
+      const hash = await hashPassword(body.password, salt);
+      const result = await env.daily_records_db
+        .prepare(`UPDATE agent_accounts SET password_hash = ?, password_salt = ? WHERE agent_id = ?`)
+        .bind(hash, salt, body.agentId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No account found with that ID" }, { status: 404 });
+      }
+      return Response.json({ saved: true });
     }
 
     return new Response("Not Found", { status: 404 });
