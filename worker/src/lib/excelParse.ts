@@ -55,13 +55,17 @@ export async function recordKey(row: Record<string, unknown>): Promise<string> {
 // both are kept since real exports are inconsistent about casing per source.
 const USER_ID_FIELD_CANDIDATES = ["userId", "UserId", "user_id", "uid", "用户ID", "用户id"];
 const AMOUNT_FIELD_CANDIDATES = [
-  "amount", "money", "orderAmount", "WithDrawAmount", "ReceivedAmount", "总额", "金额",
+  "amount", "money", "orderAmount", "WithDrawAmount", "ReceivedAmount", "changeValue", "总额", "金额",
 ];
 const STATUS_FIELD_CANDIDATES = [
   "status", "state", "COMPLETE is done",
   "0 Under review, 1 Payment processing, 2 Completed, 3 Rejected, 4 Failed", "状态",
 ];
 const TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"];
+// wallet-only: see etl/common.py's GAME_NAME_FIELD_CANDIDATES comment for
+// why this is the source of the Bonus Claim Report's category — no
+// dedicated campaign-name field exists in this export.
+const GAME_NAME_FIELD_CANDIDATES = ["Game Name"];
 
 // D1's bind() only accepts string/number/null/ArrayBuffer — a raw JS Date
 // (which is what parseAllSheets produces for date cells, via cellDates:true)
@@ -86,6 +90,7 @@ export function extractCommonFields(row: Record<string, unknown>) {
     amount: coerceForBind(pick(row, AMOUNT_FIELD_CANDIDATES)) as number | null,
     status: coerceForBind(pick(row, STATUS_FIELD_CANDIDATES)) as string | null,
     create_time: coerceForBind(pick(row, TIME_FIELD_CANDIDATES)) as string | null,
+    game_name: coerceForBind(pick(row, GAME_NAME_FIELD_CANDIDATES)) as string | null,
   };
 }
 

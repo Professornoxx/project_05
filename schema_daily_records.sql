@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS wallet_details (
   status TEXT,
   create_time TEXT,
   raw_json TEXT,
-  synced_at TEXT NOT NULL
+  synced_at TEXT NOT NULL,
+  game_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_wallet_details_user ON wallet_details(user_id);
 CREATE INDEX IF NOT EXISTS idx_wallet_details_create_time ON wallet_details(create_time);
+CREATE INDEX IF NOT EXISTS idx_wallet_details_game_name ON wallet_details(game_name);

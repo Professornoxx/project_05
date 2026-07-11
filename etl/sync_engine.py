@@ -38,7 +38,7 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # with many separate single-row statements, where each statement's own
 # param count never left single digits, not one big multi-row VALUES
 # clause like this).
-CHUNK_SIZE = 16  # 6 params/row (wallet_details): 16*6=96, under the ~100 ceiling
+CHUNK_SIZE = 14  # 7 params/row (wallet_details, now incl. game_name): 14*7=98, under the ~100 ceiling
 DEPOSIT_CHUNK_SIZE = 9  # deposits has 4 extra columns (channel, result_time, is_first_deposit, region): 9*10=90, under the ~100 ceiling
 WITHDRAW_CHUNK_SIZE = 11  # withdrawals has 3 extra columns (channel, review_time, callback_time): 11*9=99, same ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
@@ -99,8 +99,9 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
     """Returns (rows_written, touched_user_ids). deposits gets 2 extra
     columns (channel, result_time) for the Deposit Analysis dashboard
     section; withdrawals gets 3 extra columns (channel, review_time,
-    callback_time) for the Withdraw Analysis section — wallet_details
-    sticks to the lean 6-column shape."""
+    callback_time) for the Withdraw Analysis section; wallet_details gets
+    1 extra column (game_name) for the Platform Analysis Bonus Claim
+    Report."""
     if not rows:
         return 0, []
 
@@ -130,8 +131,11 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                     fields["channel"], fields["review_time"], fields["callback_time"], now,
                 ])
             else:
-                values_sql.append("(?, ?, ?, ?, ?, ?)")
-                params.extend([key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"], now])
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?)")
+                params.extend([
+                    key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
+                    fields["game_name"], now,
+                ])
             if fields["user_id"] is not None:
                 try:
                     touched_user_ids.append(int(float(fields["user_id"])))
@@ -159,11 +163,11 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
             )
         else:
             sql = (
-                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, synced_at) "
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, game_name, synced_at) "
                 f"VALUES {','.join(values_sql)} "
                 "ON CONFLICT(record_key) DO UPDATE SET "
                 "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
-                "create_time = excluded.create_time, synced_at = excluded.synced_at"
+                "create_time = excluded.create_time, game_name = excluded.game_name, synced_at = excluded.synced_at"
             )
         cf_client.d1_query(DAILY_DB_ID, sql, params)
 
