@@ -18,7 +18,9 @@ import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import { renderLoginPage } from "./lib/loginPage";
+import { renderAgentLoginPage } from "./lib/agentLoginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
+import { verifyPassword, createAgentSession, getAgentSession, destroyAgentSession, agentSessionCookieHeader, clearAgentSessionCookieHeader } from "./lib/agentAuth";
 
 // Source data's create_time values are IST-labeled (naive, no timezone
 // suffix) — confirmed by a deposit timestamped 10:50 when actual UTC time
@@ -2121,6 +2123,72 @@ export default {
 
     if (url.pathname === "/logout" && request.method === "POST") {
       return new Response(null, { status: 204, headers: { "Set-Cookie": clearCookieHeader("dashboard") } });
+    }
+
+    // Agent login — real per-account credentials (agent_accounts table),
+    // fully independent of Dashboard/Configuration's shared-key sessions.
+    // The scoped Agent Dashboard (Home/Action Center/Performance/Analytics/
+    // Search User, each filtered to the logged-in agent's assigned users)
+    // is a separate follow-up; /agent is a placeholder landing page for now
+    // so login can be verified end-to-end before that's built.
+    if (url.pathname === "/agent/login" && request.method === "GET") {
+      return new Response(renderAgentLoginPage({}), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/agent/login" && request.method === "POST") {
+      const body = (await request.json()) as { username?: string; password?: string };
+      if (!body.username || !body.password) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const account = await env.daily_records_db
+        .prepare(
+          `SELECT agent_id, display_name, password_hash, password_salt, is_active
+           FROM agent_accounts WHERE login_username = ?`
+        )
+        .bind(body.username)
+        .first<{ agent_id: number; display_name: string; password_hash: string; password_salt: string; is_active: number }>();
+      if (!account || !account.is_active) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const valid = await verifyPassword(body.password, account.password_salt, account.password_hash);
+      if (!valid) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      const token = await createAgentSession(env, { agentId: account.agent_id, displayName: account.display_name });
+      return new Response(null, {
+        status: 204,
+        headers: { "Set-Cookie": agentSessionCookieHeader(token) },
+      });
+    }
+
+    if (url.pathname === "/agent/logout" && request.method === "POST") {
+      await destroyAgentSession(request, env);
+      return new Response(null, { status: 204, headers: { "Set-Cookie": clearAgentSessionCookieHeader() } });
+    }
+
+    if (url.pathname === "/agent" && request.method === "GET") {
+      const session = await getAgentSession(request, env);
+      if (!session) {
+        return new Response(null, { status: 302, headers: { Location: "/agent/login" } });
+      }
+      return new Response(
+        `<!DOCTYPE html><html><head><meta charset="UTF-8" /><title>Agent Dashboard</title><meta name="robots" content="noindex" /></head>
+         <body style="font-family:system-ui,sans-serif;max-width:400px;margin:80px auto;">
+         <h1>Welcome, ${session.displayName}</h1>
+         <p>Your scoped dashboard is coming soon.</p>
+         <a href="#" id="logoutLink">Log out</a>
+         <script>
+           document.getElementById('logoutLink').onclick = async (e) => {
+             e.preventDefault();
+             await fetch('/agent/logout', { method: 'POST' });
+             location.href = '/agent/login';
+           };
+         </script>
+         </body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } }
+      );
     }
 
     // Configuration + everything else that writes to daily_records_db
