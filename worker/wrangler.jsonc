@@ -8,8 +8,10 @@
   // Merged database: daily-records-db now also holds the users table
   // (migrated from the former master-db via `wrangler d1 export` +
   // `wrangler d1 execute --file`, verified live — 55,079 rows, exact
-  // match). master-db itself is left alone (not deleted) as a rollback
-  // safety net until this migration is fully verified in production.
+  // match). master-db was kept as a rollback safety net during rollout
+  // and deleted once Phase 1/2 were verified stable in production for
+  // several days — see backups/master-db-final-20260711.sql for a final
+  // export taken immediately before deletion.
   "d1_databases": [
     {
       "binding": "daily_records_db",
