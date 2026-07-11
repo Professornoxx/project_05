@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS deposits (
   amount REAL,
   status TEXT,
   create_time TEXT,
-  channel TEXT,       -- e.g. "Pay Center-coinsPay" — for Deposit Channel Analysis
+  channel TEXT,       -- e.g. "Pay Center-coinsPay" — PAYMENT gateway, for Deposit Channel Analysis
+  marketing_channel TEXT, -- e.g. "B02", "rupiibet" — acquisition channel, distinct raw "channel"
+                           -- header field on the same export row; for Platform Analysis Channel performance
   result_time TEXT,   -- when the order actually completed (vs. create_time = initiated)
   raw_json TEXT,
   synced_at TEXT NOT NULL

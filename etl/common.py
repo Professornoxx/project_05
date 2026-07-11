@@ -30,10 +30,22 @@ TIME_FIELD_CANDIDATES = ["createTime", "create_time", "time", "创建时间"]
 # the withdraw export's equivalent field (confirmed against real withdraw
 # export headers) and must come before "Channel Order ID", which looks like
 # a channel name but is actually an unrelated order-ID column that withdraw
-# rows also happen to have. "channel"/"appChannel" are generic fallbacks.
+# rows also happen to have. "channel"/"appChannel" are listed as fallbacks
+# but never actually reached for deposits — "pay channel" is always
+# populated there — this column is genuinely the PAYMENT gateway, not a
+# marketing channel; see MARKETING_CHANNEL_FIELD_CANDIDATES below for that.
 CHANNEL_FIELD_CANDIDATES = [
     "pay channel", "Withdraw Payment Channels", "channel", "appChannel", "Channel Order ID", "渠道",
 ]
+# deposit-only: the raw "channel" header (no space) confirmed present
+# alongside "pay channel" on the SAME export — this is the actual marketing
+# acquisition-channel code (values like "B02", "rupiibet", "indusbet"),
+# completely different from "pay channel" (the payment gateway, e.g. "Pay
+# Center-rushPay"). Fresh on every deposit row, unlike users.register_channel
+# which is only ever populated by a one-time manual master-file upload and
+# is NULL for any user who registered after the last such upload. Used by
+# the Platform Analysis "Channel performance" panel.
+MARKETING_CHANNEL_FIELD_CANDIDATES = ["channel"]
 # "resultDate" is when a deposit order actually completed (vs. createTime,
 # when it was initiated) — confirmed present in real deposit export data.
 RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "update_time"]
@@ -138,6 +150,7 @@ def extract_common_fields(row: dict) -> dict:
         "status": _coerce(_pick(row, STATUS_FIELD_CANDIDATES)),
         "create_time": _coerce(_pick(row, TIME_FIELD_CANDIDATES)),
         "channel": _coerce(_pick(row, CHANNEL_FIELD_CANDIDATES)),
+        "marketing_channel": _coerce(_pick(row, MARKETING_CHANNEL_FIELD_CANDIDATES)),
         "result_time": _coerce(_pick(row, RESULT_TIME_FIELD_CANDIDATES)),
         "review_time": _coerce(_pick(row, REVIEW_TIME_FIELD_CANDIDATES)),
         "callback_time": _coerce(_pick(row, CALLBACK_TIME_FIELD_CANDIDATES)),

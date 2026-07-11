@@ -1581,16 +1581,27 @@ export default {
     }
 
     // Platform Analysis section 2, panel 1: Channel performance — 4-day
-    // combined. Cohort = every first-deposit user whose first deposit
-    // fell in the trailing 4-day window ending yesterday (so D2/D3 checks
-    // have a chance to have happened), grouped by deposit channel. D2/D3
-    // users = cohort members who made another COMPLETE deposit on exactly
-    // their first-deposit day + 2 / + 3 (same relative-day join pattern as
-    // the Analytics page's Day-1 Retention panel, extended one/two days
-    // further). Quality is a heuristic, not from any documented business
-    // rule: a channel whose average first deposit is far above the norm
-    // is flagged "High value" regardless of return behavior; otherwise
-    // it's graded on D2 return rate (>=25% good, >=15% average, else weak).
+    // combined. "Channel" here is deposits.marketing_channel — the raw
+    // "channel" export header (values like "B02", "rupiibet"), which is a
+    // DIFFERENT field from deposits.channel ("pay channel" — the payment
+    // gateway, e.g. "Pay Center-rushPay"; used by Deposit Channel
+    // Analysis, don't confuse the two). Went through two wrong fields
+    // before landing here: first deposits.channel (payment gateway, not
+    // marketing), then users.register_channel (semantically correct but
+    // only ever populated by a one-time manual master-file upload — every
+    // user who registered after the last upload has it NULL, which was
+    // 100% of the panel's very-recent first-deposit cohort). marketing_channel
+    // is fresh on every deposit row regardless of upload history.
+    // Cohort = every first-deposit user whose first deposit fell in the
+    // trailing 4-day window ending yesterday (so D2/D3 checks have a
+    // chance to have happened). D2/D3 users = cohort members who made
+    // another COMPLETE deposit on exactly their first-deposit day + 2 / +3
+    // (same relative-day join pattern as the Analytics page's Day-1
+    // Retention panel, extended one/two days further). Quality is a
+    // heuristic, not from any documented business rule: a channel whose
+    // average first deposit is far above the norm is flagged "High value"
+    // regardless of return behavior; otherwise it's graded on D2 return
+    // rate (>=25% good, >=15% average, else weak).
     if (url.pathname === "/api/dashboard/platform-analysis/channel-performance" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -1606,8 +1617,9 @@ export default {
       const cohortStartStr = cohortStart.toISOString().slice(0, 10);
 
       const CTE = `WITH fd AS (
-          SELECT user_id, COALESCE(channel, 'Unknown') as channel, date(create_time) as fd_day, amount
-          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+          SELECT user_id, COALESCE(marketing_channel, 'Unknown') as channel, date(create_time) as fd_day, amount
+          FROM deposits
+          WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
         ),
         dep_days AS (
           SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits
