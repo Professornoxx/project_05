@@ -410,7 +410,7 @@ paBonusInitDatePills();
 const paNewOldState = { view: 'daily', page: 1 };
 const paNewOldHeads = {
   daily: '<th>Date</th><th>Old users</th><th>Avg dep (old)</th><th>New users</th><th>Avg dep (new)</th><th>Old WD users</th><th>Avg WD (old)</th><th>New WD users</th><th>Avg WD (new)</th><th>Total deposit</th><th>Total depositors</th>',
-  retention: '<th>Date</th><th>New users</th><th>Retained (3D)</th><th>Retention %</th><th>Avg retained deposit</th>',
+  retention: '<th>Date</th><th>New users</th><th>Withdrew - count</th><th>Withdrew - returned</th><th>Withdrew - retention %</th><th>Never withdrew - count</th><th>Never withdrew - returned</th><th>Never withdrew - retention %</th>',
 };
 async function paLoadNewOld() {
   const statusEl = document.getElementById('paStatus');
@@ -429,9 +429,12 @@ async function paLoadNewOld() {
           '</td><td>' + Number(r.old_wd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_wd_old) +
           '</td><td>' + Number(r.new_wd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.avg_wd_new) +
           '</td><td>' + paFmtInr(r.total_deposit) + '</td><td>' + Number(r.total_depositors).toLocaleString('en-IN') + '</td></tr>'
-        : '<tr><td>' + r.date + '</td><td>' + Number(r.new_users).toLocaleString('en-IN') + '</td><td>' + Number(r.retained_3d).toLocaleString('en-IN') +
-          '</td><td>' + Number(r.retention_pct || 0).toFixed(1) + '%</td><td>' + paFmtInr(r.avg_retained_deposit) + '</td></tr>'
-    ).join('') || '<tr><td colspan="11">No data</td></tr>';
+        : '<tr><td>' + r.date + '</td><td>' + Number(r.new_users).toLocaleString('en-IN') +
+          '</td><td>' + Number(r.withdrew_count).toLocaleString('en-IN') + '</td><td>' + Number(r.withdrew_returned).toLocaleString('en-IN') +
+          '</td><td>' + (r.withdrew_count > 0 ? (100 * r.withdrew_returned / r.withdrew_count).toFixed(2) : '0') + '%' +
+          '</td><td>' + Number(r.never_withdrew_count).toLocaleString('en-IN') + '</td><td>' + Number(r.never_withdrew_returned).toLocaleString('en-IN') +
+          '</td><td>' + (r.never_withdrew_count > 0 ? (100 * r.never_withdrew_returned / r.never_withdrew_count).toFixed(2) : '0') + '%</td></tr>'
+    ).join('') || '<tr><td colspan="' + (paNewOldState.view === 'daily' ? 11 : 8) + '">No data</td></tr>';
 
     document.getElementById('paNewOldPageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
     document.getElementById('paNewOldPrev').disabled = d.page <= 1;

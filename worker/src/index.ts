@@ -1845,10 +1845,13 @@ export default {
     }
 
     // Platform Analysis section 4, tab 2: New User 3-Day Retention. Cohort
-    // = users whose first-ever deposit landed on a given day; "retained" =
-    // made another COMPLETE deposit within the following 3 calendar days.
-    // Same cohort concept as Analytics' Day-1 Retention, extended to a
-    // 3-day window and grouped by cohort day instead of a single date.
+    // = users whose first-ever deposit landed on a given day, split into
+    // two segments: withdrew at least once (any COMPLETE withdrawal, any
+    // time) vs never withdrew. "Returned" = made another COMPLETE deposit
+    // within the following 3 calendar days of their first deposit — same
+    // 3-day window either segment. The point of the split: does
+    // successfully withdrawing kill retention, or build enough trust that
+    // withdrawers actually come back MORE than non-withdrawers?
     if (url.pathname === "/api/dashboard/platform-analysis/new-user-retention" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
@@ -1867,22 +1870,29 @@ export default {
              SELECT user_id, date(create_time) as cohort_day FROM deposits
              WHERE is_first_deposit = 1 AND user_id IS NOT NULL
            ),
+           withdrew AS (
+             SELECT DISTINCT user_id FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL
+           ),
            return_dep AS (
-             SELECT DISTINCT user_id, date(create_time) as dep_day, amount FROM deposits
+             SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits
              WHERE status = 'COMPLETE' AND user_id IS NOT NULL
            ),
-           retained AS (
-             SELECT c.cohort_day, c.user_id, MIN(r.amount) as first_return_amt
+           returned AS (
+             SELECT c.cohort_day, c.user_id
              FROM cohort c
              JOIN return_dep r ON r.user_id = c.user_id
                AND date(r.dep_day) > c.cohort_day AND date(r.dep_day) <= date(c.cohort_day, '+3 day')
              GROUP BY c.cohort_day, c.user_id
            )
-           SELECT c.cohort_day as date, COUNT(DISTINCT c.user_id) as new_users,
-                  COUNT(DISTINCT ret.user_id) as retained_3d,
-                  (100.0 * COUNT(DISTINCT ret.user_id) / COUNT(DISTINCT c.user_id)) as retention_pct,
-                  COALESCE(SUM(ret.first_return_amt), 0) / NULLIF(COUNT(DISTINCT ret.user_id), 0) as avg_retained_deposit
-           FROM cohort c LEFT JOIN retained ret ON ret.cohort_day = c.cohort_day AND ret.user_id = c.user_id
+           SELECT c.cohort_day as date,
+                  COUNT(DISTINCT c.user_id) as new_users,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NOT NULL THEN c.user_id END) as withdrew_count,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NOT NULL AND ret.user_id IS NOT NULL THEN c.user_id END) as withdrew_returned,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NULL THEN c.user_id END) as never_withdrew_count,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NULL AND ret.user_id IS NOT NULL THEN c.user_id END) as never_withdrew_returned
+           FROM cohort c
+           LEFT JOIN withdrew w ON w.user_id = c.user_id
+           LEFT JOIN returned ret ON ret.cohort_day = c.cohort_day AND ret.user_id = c.user_id
            GROUP BY c.cohort_day
            ORDER BY c.cohort_day DESC LIMIT ? OFFSET ?`
         )
