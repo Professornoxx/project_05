@@ -1573,6 +1573,138 @@ export default {
       });
     }
 
+    // Platform Analysis section 2, panel 1: Channel performance — 4-day
+    // combined. Cohort = every first-deposit user whose first deposit
+    // fell in the trailing 4-day window ending yesterday (so D2/D3 checks
+    // have a chance to have happened), grouped by deposit channel. D2/D3
+    // users = cohort members who made another COMPLETE deposit on exactly
+    // their first-deposit day + 2 / + 3 (same relative-day join pattern as
+    // the Analytics page's Day-1 Retention panel, extended one/two days
+    // further). Quality is a heuristic, not from any documented business
+    // rule: a channel whose average first deposit is far above the norm
+    // is flagged "High value" regardless of return behavior; otherwise
+    // it's graded on D2 return rate (>=25% good, >=15% average, else weak).
+    if (url.pathname === "/api/dashboard/platform-analysis/channel-performance" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const cohortEnd = new Date(anchorDate + "T00:00:00Z");
+      cohortEnd.setUTCDate(cohortEnd.getUTCDate() - 1);
+      const cohortEndStr = cohortEnd.toISOString().slice(0, 10);
+      const cohortStart = new Date(anchorDate + "T00:00:00Z");
+      cohortStart.setUTCDate(cohortStart.getUTCDate() - 4);
+      const cohortStartStr = cohortStart.toISOString().slice(0, 10);
+
+      const CTE = `WITH fd AS (
+          SELECT user_id, COALESCE(channel, 'Unknown') as channel, date(create_time) as fd_day, amount
+          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+        ),
+        dep_days AS (
+          SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits
+          WHERE status = 'COMPLETE' AND user_id IS NOT NULL AND date(create_time) BETWEEN ? AND ?
+        ),
+        channel_stats AS (
+          SELECT fd.channel, COUNT(*) as fd_users, SUM(fd.amount) as fd_amount,
+                 SUM(CASE WHEN d2.user_id IS NOT NULL THEN 1 ELSE 0 END) as d2_users,
+                 SUM(CASE WHEN d3.user_id IS NOT NULL THEN 1 ELSE 0 END) as d3_users
+          FROM fd
+          LEFT JOIN dep_days d2 ON d2.user_id = fd.user_id AND d2.dep_day = date(fd.fd_day, '+2 day')
+          LEFT JOIN dep_days d3 ON d3.user_id = fd.user_id AND d3.dep_day = date(fd.fd_day, '+3 day')
+          GROUP BY fd.channel
+        )`;
+      const cteArgs = [cohortStartStr, cohortEndStr, cohortStartStr, anchorDate];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM channel_stats`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT channel, fd_users, fd_amount, fd_amount / fd_users as avg_fd,
+                  d2_users, (100.0 * d2_users / fd_users) as d2_pct,
+                  d3_users, (100.0 * d3_users / fd_users) as d3_pct
+           FROM channel_stats
+           ORDER BY fd_users DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        date: anchorDate,
+        cohortStart: cohortStartStr,
+        cohortEnd: cohortEndStr,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // Platform Analysis section 2, panel 2: Net Revenue by Region & VIP.
+    // Deposit minus withdrawal (not just gross deposit volume) for the
+    // most recent synced date — a region/tier can look like a top
+    // performer by deposit total while actually net-negative once
+    // withdrawals are subtracted (see VIP 1/2 below, both net-negative).
+    // "Users" = anyone who deposited OR withdrew that day, not just
+    // depositors. by=region groups on the same COALESCE(users.city,
+    // deposit's own region, 'Unknown') fallback used elsewhere (state-level
+    // vs city-level granularity mismatch); by=vip groups on the live VIP
+    // bracket.
+    if (url.pathname === "/api/dashboard/platform-analysis/net-revenue" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const by = url.searchParams.get("by") === "vip" ? "vip" : "region";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+
+      const groupExpr = by === "vip" ? vipLevelCase("COALESCE(u.total_deposit, 0)") : "COALESCE(u.city, c.region, 'Unknown')";
+      const label = by === "vip" ? "vip_level" : "region";
+
+      // No FULL OUTER JOIN (not reliably supported here) — union the two
+      // user-id sets instead, since a user might withdraw without
+      // depositing that day (or vice versa) and still needs to be counted.
+      const rows = await env.daily_records_db
+        .prepare(
+          `WITH day_dep AS (
+             SELECT user_id, SUM(amount) as amt, MIN(region) as region FROM deposits
+             WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           day_wd AS (
+             SELECT user_id, SUM(amount) as amt FROM withdrawals
+             WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           active_users AS (
+             SELECT user_id FROM day_dep
+             UNION
+             SELECT user_id FROM day_wd
+           ),
+           combined AS (
+             SELECT au.user_id, COALESCE(dd.amt, 0) as dep, COALESCE(dw.amt, 0) as wd, dd.region as region
+             FROM active_users au
+             LEFT JOIN day_dep dd ON dd.user_id = au.user_id
+             LEFT JOIN day_wd dw ON dw.user_id = au.user_id
+           )
+           SELECT ${groupExpr} as ${label},
+                  COALESCE(SUM(c.dep), 0) as total_deposit,
+                  COALESCE(SUM(c.wd), 0) as total_withdrawal,
+                  COALESCE(SUM(c.dep), 0) - COALESCE(SUM(c.wd), 0) as net_revenue,
+                  COUNT(*) as users
+           FROM combined c LEFT JOIN users u ON u.user_id = c.user_id
+           GROUP BY ${groupExpr} ORDER BY net_revenue DESC LIMIT 20`
+        )
+        .bind(anchorDate, anchorDate)
+        .all();
+
+      return Response.json({ date: anchorDate, by, rows: rows.results });
+    }
+
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an
     // analytics view, grouped with Dashboard, not Configuration).
     if (url.pathname === "/master-stats" && request.method === "GET") {

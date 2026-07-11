@@ -1,10 +1,13 @@
-// Platform Analysis section 1: Game & Revenue Economics — two panels
+// Platform Analysis page. Section 1: Game & Revenue Economics — two panels
 // matching the provided reference design (orange "Profit Users of the Day",
-// red "Suspicious Withdraw Users"). Data from
-// /api/dashboard/platform-analysis/{profit-users,suspicious-withdrawals}.
-// The reference design's "Games Played" column has no equivalent data
-// source in this system (no game-session table exists) — see the endpoint
-// comments in index.ts for the adapted definition used instead.
+// red "Suspicious Withdraw Users"). Section 2: Acquisition & Bonus
+// Economics — two more panels (blue "Channel performance", green
+// "Net Revenue by Region & VIP"). Data from
+// /api/dashboard/platform-analysis/{profit-users,suspicious-withdrawals,
+// channel-performance,net-revenue}. The reference design's "Games Played"
+// column initially looked unavailable but turned out to have a real data
+// source (wallet_details row counts) — see the endpoint comments in
+// index.ts for both that and the Channel-performance "Quality" heuristic.
 export const PLATFORM_ANALYSIS_CONTENT_HTML = `
 <style>
   .pa-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -15,11 +18,15 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
   .pa-panel { background: #fff; border-radius: 0 10px 10px 0; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   .pa-panel.orange { border-left: 4px solid #f59e0b; }
   .pa-panel.red { border-left: 4px solid #ef4444; }
+  .pa-panel.blue { border-left: 4px solid #3b82f6; }
+  .pa-panel.green { border-left: 4px solid #16a34a; }
   .pa-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
   .pa-panel-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 14px; }
   .pa-icon { width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
   .pa-icon.orange { background: #fef3c7; }
   .pa-icon.red { background: #fee2e2; }
+  .pa-icon.blue { background: #dbeafe; }
+  .pa-icon.green { background: #dcfce7; }
   .pa-btns { display: flex; align-items: center; gap: 8px; }
   .pa-toggle { background: #f59e0b; color: #fff; border: none; padding: 6px 12px; border-radius: 16px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; }
   .pa-toggle.off { background: #f1f5f9; color: #64748b; }
@@ -36,6 +43,18 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
   .pa-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 12px; color: #666; }
   .pa-pager button { border: 1px solid #ddd; background: #fff; border-radius: 16px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
   .pa-pager button:disabled { opacity: 0.4; cursor: default; }
+  .pa-pill { font-size: 10px; font-weight: 700; padding: 3px 9px; border-radius: 10px; display: inline-block; }
+  .pa-pill.weak { background: #fee2e2; color: #b91c1c; }
+  .pa-pill.average { background: #fef3c7; color: #92400e; }
+  .pa-pill.good { background: #dcfce7; color: #15803d; }
+  .pa-pill.highvalue { background: #ccfbf1; color: #0f766e; }
+  .pa-pct.low { background: #fee2e2; color: #b91c1c; padding: 2px 7px; border-radius: 8px; }
+  .pa-pct.mid { background: #fef3c7; color: #92400e; padding: 2px 7px; border-radius: 8px; }
+  .pa-pct.high { background: #dcfce7; color: #15803d; padding: 2px 7px; border-radius: 8px; }
+  .pa-seg { display: flex; gap: 8px; margin-bottom: 14px; }
+  .pa-seg button { border: 1px solid #ddd; background: #fff; color: #333; padding: 8px 16px; border-radius: 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .pa-seg button.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+  .pa-section-gap { margin-top: 28px; }
 </style>
 
 <div class="pa-header">
@@ -80,6 +99,48 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
     <div class="pa-pager">
       <span id="paSuspiciousPageLabel">Page 1 of 1</span>
       <span><button id="paSuspiciousPrev">← Prev</button> <button id="paSuspiciousNext">Next →</button></span>
+    </div>
+  </div>
+</div>
+
+<div class="pa-header pa-section-gap">
+  <div class="pa-title">Acquisition &amp; Bonus Economics</div>
+  <div class="pa-tag">PLATFORM</div>
+</div>
+
+<div class="pa-grid">
+  <div class="pa-panel blue">
+    <div class="pa-panel-head">
+      <div class="pa-panel-title"><span class="pa-icon blue">📊</span>Channel performance — 4-day combined</div>
+      <button class="pa-excel-btn" id="paExportChannel">📥 Excel</button>
+    </div>
+    <div class="pa-table-wrap">
+      <table class="pa-table" id="paChannelTable">
+        <thead><tr><th>Channel</th><th>FD users</th><th>FD amount</th><th>Avg FD</th><th>D2 users</th><th>D2 %</th><th>D3 users</th><th>D3 %</th><th>Quality</th></tr></thead>
+        <tbody><tr><td colspan="9">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="pa-pager">
+      <span id="paChannelPageLabel">Page 1 of 1</span>
+      <span><button id="paChannelPrev">← Prev</button> <button id="paChannelNext">Next →</button></span>
+    </div>
+  </div>
+
+  <div class="pa-panel green">
+    <div class="pa-panel-head">
+      <div class="pa-panel-title"><span class="pa-icon green">💰</span>Net Revenue by Region &amp; VIP</div>
+      <button class="pa-excel-btn" id="paExportRevenue">📥 Excel</button>
+    </div>
+    <div class="pa-panel-sub">Deposit minus withdrawal, not just gross deposit volume — a region/tier can look like a top performer by deposit total while actually net-negative once withdrawals are subtracted. Most recent date in the report.</div>
+    <div class="pa-seg">
+      <button class="active" id="paRevByRegion">By Region</button>
+      <button id="paRevByVip">By VIP Level</button>
+    </div>
+    <div class="pa-table-wrap">
+      <table class="pa-table" id="paRevenueTable">
+        <thead><tr id="paRevenueHead"><th>Region</th><th>Total deposit</th><th>Total withdrawal</th><th>Net revenue</th><th>Users</th></tr></thead>
+        <tbody><tr><td colspan="5">Loading...</td></tr></tbody>
+      </table>
     </div>
   </div>
 </div>
@@ -150,6 +211,81 @@ async function paLoadSuspicious() {
   }
 }
 
+function paQualityPill(fdUsers, avgFd, d2Pct) {
+  let cls, label;
+  if (fdUsers > 0 && avgFd >= 1000) { cls = 'highvalue'; label = 'High value'; }
+  else if (d2Pct >= 25) { cls = 'good'; label = 'Good'; }
+  else if (d2Pct >= 15) { cls = 'average'; label = 'Average'; }
+  else { cls = 'weak'; label = 'Weak'; }
+  return '<span class="pa-pill ' + cls + '">' + label + '</span>';
+}
+function paPctBadge(pct) {
+  const cls = pct >= 25 ? 'high' : pct >= 10 ? 'mid' : 'low';
+  return '<span class="pa-pct ' + cls + '">' + Number(pct || 0).toFixed(1) + '%</span>';
+}
+
+const paChannelState = { page: 1 };
+async function paLoadChannel() {
+  const statusEl = document.getElementById('paStatus');
+  try {
+    const res = await fetch('/api/dashboard/platform-analysis/channel-performance?page=' + paChannelState.page);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.querySelector('#paChannelTable tbody').innerHTML = (d.rows || []).map((r) =>
+      '<tr><td>' + r.channel + '</td><td>' + Number(r.fd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.fd_amount) +
+      '</td><td>' + paFmtInr(r.avg_fd) + '</td><td>' + Number(r.d2_users).toLocaleString('en-IN') + '</td><td>' + paPctBadge(r.d2_pct) +
+      '</td><td>' + Number(r.d3_users).toLocaleString('en-IN') + '</td><td>' + paPctBadge(r.d3_pct) +
+      '</td><td>' + paQualityPill(r.fd_users, r.avg_fd, r.d2_pct) + '</td></tr>'
+    ).join('') || '<tr><td colspan="9">No data</td></tr>';
+
+    document.getElementById('paChannelPageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
+    document.getElementById('paChannelPrev').disabled = d.page <= 1;
+    document.getElementById('paChannelNext').disabled = d.page >= d.totalPages;
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+const paRevenueState = { by: 'region' };
+async function paLoadRevenue() {
+  const statusEl = document.getElementById('paStatus');
+  try {
+    const res = await fetch('/api/dashboard/platform-analysis/net-revenue?by=' + paRevenueState.by);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.getElementById('paRevenueHead').innerHTML = paRevenueState.by === 'vip'
+      ? '<th>VIP level</th><th>Total deposit</th><th>Total withdrawal</th><th>Net revenue</th><th>Users</th>'
+      : '<th>Region</th><th>Total deposit</th><th>Total withdrawal</th><th>Net revenue</th><th>Users</th>';
+
+    document.querySelector('#paRevenueTable tbody').innerHTML = (d.rows || []).map((r) =>
+      '<tr><td>' + (paRevenueState.by === 'vip' ? 'VIP ' + r.vip_level : r.region) + '</td><td>' + paFmtInr(r.total_deposit) +
+      '</td><td>' + paFmtInr(r.total_withdrawal) + '</td><td>' + paFmtSigned(r.net_revenue) +
+      '</td><td>' + Number(r.users).toLocaleString('en-IN') + '</td></tr>'
+    ).join('') || '<tr><td colspan="5">No data</td></tr>';
+
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+document.getElementById('paRevByRegion').onclick = () => {
+  paRevenueState.by = 'region';
+  document.getElementById('paRevByRegion').classList.add('active');
+  document.getElementById('paRevByVip').classList.remove('active');
+  paLoadRevenue();
+};
+document.getElementById('paRevByVip').onclick = () => {
+  paRevenueState.by = 'vip';
+  document.getElementById('paRevByVip').classList.add('active');
+  document.getElementById('paRevByRegion').classList.remove('active');
+  paLoadRevenue();
+};
+document.getElementById('paChannelPrev').onclick = () => { if (paChannelState.page > 1) { paChannelState.page--; paLoadChannel(); } };
+document.getElementById('paChannelNext').onclick = () => { paChannelState.page++; paLoadChannel(); };
+
 document.getElementById('paNewToggle').onclick = () => {
   paState.profit.newOnly = !paState.profit.newOnly;
   paState.profit.page = 1;
@@ -174,8 +310,12 @@ function paDownloadCsv(tableEl, filename) {
 }
 document.getElementById('paExportProfit').onclick = () => paDownloadCsv(document.getElementById('paProfitTable'), 'profit-users-of-the-day.csv');
 document.getElementById('paExportSuspicious').onclick = () => paDownloadCsv(document.getElementById('paSuspiciousTable'), 'suspicious-withdraw-users.csv');
+document.getElementById('paExportChannel').onclick = () => paDownloadCsv(document.getElementById('paChannelTable'), 'channel-performance.csv');
+document.getElementById('paExportRevenue').onclick = () => paDownloadCsv(document.getElementById('paRevenueTable'), 'net-revenue-by-' + paRevenueState.by + '.csv');
 
 paLoadProfit();
 paLoadSuspicious();
+paLoadChannel();
+paLoadRevenue();
 </script>
 `;
