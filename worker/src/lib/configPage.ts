@@ -64,6 +64,32 @@ export const CONFIG_PAGE_HTML = `<!DOCTYPE html>
   <div class="status" id="agentUploadStatus"></div>
 </section>
 
+<section>
+  <h2>Agent Accounts</h2>
+  <p style="font-size:13px;color:#555;margin-top:0;">Login accounts for the Agent Dashboard. Display name must match a real assigned-agent value exactly — that's what scopes each agent's data.</p>
+  <label for="agentNameSelect">Agent (display name)</label>
+  <select id="agentNameSelect" style="width:100%;padding:8px;box-sizing:border-box;margin-bottom:10px;"><option value="">Loading agent names...</option></select>
+  <label for="newAgentUsername">Username</label>
+  <input type="text" id="newAgentUsername" placeholder="e.g. nisha_agent" />
+  <label for="newAgentPassword">Password (min 8 characters)</label>
+  <input type="text" id="newAgentPassword" placeholder="initial password" />
+  <button id="createAgentAccountBtn">Create Account</button>
+  <div class="status" id="agentAccountStatus"></div>
+
+  <table id="agentAccountsTable" style="width:100%;border-collapse:collapse;margin-top:16px;font-size:13px;">
+    <thead>
+      <tr style="text-align:left;border-bottom:1px solid #ddd;">
+        <th style="padding:6px 4px;">Username</th>
+        <th style="padding:6px 4px;">Agent</th>
+        <th style="padding:6px 4px;">Status</th>
+        <th style="padding:6px 4px;">Created</th>
+        <th style="padding:6px 4px;">Actions</th>
+      </tr>
+    </thead>
+    <tbody><tr><td colspan="5" style="padding:6px 4px;">Loading...</td></tr></tbody>
+  </table>
+</section>
+
 <script>
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
@@ -184,6 +210,127 @@ document.getElementById('agentUploadBtn').onclick = async () => {
     statusEl.className = 'status err';
   }
 };
+
+async function loadAgentNames() {
+  const select = document.getElementById('agentNameSelect');
+  try {
+    const res = await fetch('/api/config/agent-names');
+    const data = await readJsonSafely(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    select.innerHTML = data.agentNames.length
+      ? data.agentNames.map((n) => '<option value="' + n.replace(/"/g, '&quot;') + '">' + n + '</option>').join('')
+      : '<option value="">No assigned agents found</option>';
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load agent names</option>';
+  }
+}
+
+async function loadAgentAccounts() {
+  const tbody = document.querySelector('#agentAccountsTable tbody');
+  try {
+    const res = await fetch('/api/config/agent-accounts');
+    const data = await readJsonSafely(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    if (!data.accounts.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="padding:6px 4px;">No accounts yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.accounts.map((a) => {
+      const active = !!a.is_active;
+      return '<tr style="border-bottom:1px solid #eee;">'
+        + '<td style="padding:6px 4px;">' + a.login_username + '</td>'
+        + '<td style="padding:6px 4px;">' + a.display_name + '</td>'
+        + '<td style="padding:6px 4px;">' + (active ? 'Active' : 'Disabled') + '</td>'
+        + '<td style="padding:6px 4px;">' + (a.created_at || '').slice(0, 10) + '</td>'
+        + '<td style="padding:6px 4px;">'
+        + '<button class="toggleAcctBtn" data-id="' + a.agent_id + '" data-active="' + (active ? '1' : '0') + '">' + (active ? 'Disable' : 'Enable') + '</button> '
+        + '<button class="resetPwBtn" data-id="' + a.agent_id + '">Reset PW</button>'
+        + '</td></tr>';
+    }).join('');
+
+    tbody.querySelectorAll('.toggleAcctBtn').forEach((btn) => {
+      btn.onclick = async () => {
+        const statusEl = document.getElementById('agentAccountStatus');
+        const id = Number(btn.getAttribute('data-id'));
+        const currentlyActive = btn.getAttribute('data-active') === '1';
+        statusEl.textContent = 'Saving...';
+        statusEl.className = 'status';
+        try {
+          const res = await fetch('/api/config/agent-accounts/toggle', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ agentId: id, isActive: !currentlyActive }),
+          });
+          const data = await readJsonSafely(res);
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          statusEl.textContent = 'Updated.';
+          statusEl.className = 'status ok';
+          loadAgentAccounts();
+        } catch (e) {
+          statusEl.textContent = 'Error: ' + e.message;
+          statusEl.className = 'status err';
+        }
+      };
+    });
+
+    tbody.querySelectorAll('.resetPwBtn').forEach((btn) => {
+      btn.onclick = async () => {
+        const statusEl = document.getElementById('agentAccountStatus');
+        const id = Number(btn.getAttribute('data-id'));
+        const newPassword = prompt('Enter a new password (min 8 characters):');
+        if (!newPassword) return;
+        statusEl.textContent = 'Saving...';
+        statusEl.className = 'status';
+        try {
+          const res = await fetch('/api/config/agent-accounts/reset-password', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ agentId: id, password: newPassword }),
+          });
+          const data = await readJsonSafely(res);
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          statusEl.textContent = 'Password reset.';
+          statusEl.className = 'status ok';
+        } catch (e) {
+          statusEl.textContent = 'Error: ' + e.message;
+          statusEl.className = 'status err';
+        }
+      };
+    });
+  } catch (e) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:6px 4px;">Failed to load accounts.</td></tr>';
+  }
+}
+
+document.getElementById('createAgentAccountBtn').onclick = async () => {
+  const statusEl = document.getElementById('agentAccountStatus');
+  const displayName = document.getElementById('agentNameSelect').value;
+  const username = document.getElementById('newAgentUsername').value.trim();
+  const password = document.getElementById('newAgentPassword').value;
+  if (!displayName) { statusEl.textContent = 'Choose an agent first.'; statusEl.className = 'status err'; return; }
+  statusEl.textContent = 'Saving...';
+  statusEl.className = 'status';
+  try {
+    const res = await fetch('/api/config/agent-accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ displayName, username, password }),
+    });
+    const data = await readJsonSafely(res);
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    statusEl.textContent = 'Account created.';
+    statusEl.className = 'status ok';
+    document.getElementById('newAgentUsername').value = '';
+    document.getElementById('newAgentPassword').value = '';
+    loadAgentAccounts();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.className = 'status err';
+  }
+};
+
+loadAgentNames();
+loadAgentAccounts();
 </script>
 </body>
 </html>`;
