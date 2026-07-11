@@ -1,5 +1,6 @@
 # Real user PII/financial data — never commit, especially to a public repo
 import_batches/
+backups/
 
 # Local Cloudflare/dev state
 .wrangler/
