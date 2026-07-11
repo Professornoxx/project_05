@@ -26,6 +26,43 @@ function requireAdmin(request: Request, env: Env): Response | null {
   return null;
 }
 
+// Config-page "Save & Sync" used to run the sync inline via
+// ctx.waitUntil(runFullSync(env)) — same CPU-time budget as the request
+// that triggered it, so a real sync (especially the ~100k-row wallet
+// source) reliably got killed mid-run with "Worker exceeded CPU time
+// limit" before writing a single sync_runs row. That's the exact same
+// CPU-limit problem the whole ETL pipeline was moved off Workers for in
+// the first place (see etl/sync_engine.py's docstring) — it just
+// resurfaced here because this one convenience trigger still used the
+// old Worker-based path. Dispatching the GitHub Actions workflow instead
+// is a single fast outbound request with no CPU ceiling of its own; the
+// actual sync work runs on GitHub's infrastructure, same as the hourly
+// cron and every manual `gh workflow run` used to unblock this by hand.
+async function triggerGithubSync(env: Env): Promise<{ dispatched: boolean; error?: string }> {
+  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
+    return { dispatched: false, error: "GITHUB_TOKEN/GITHUB_REPO secret not configured" };
+  }
+  try {
+    const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/etl-hourly.yml/dispatches`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "upload-worker",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ ref: "main" }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { dispatched: false, error: `GitHub API ${res.status}: ${text.slice(0, 200)}` };
+    }
+    return { dispatched: true };
+  } catch (err) {
+    return { dispatched: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const executionId = `${controller.cron}-${controller.scheduledTime}`;
@@ -155,15 +192,13 @@ export default {
         return Response.json({ error: "token is required" }, { status: 400 });
       }
       await setBearerToken(env, body.token);
-      // Sync runs in the background (ctx.waitUntil), not awaited inline.
-      // The export APIs can be slow or hang (observed 2+ minute calls) —
-      // awaiting them here made the whole HTTP request run past Cloudflare's
-      // edge timeout, which killed the connection and returned a Cloudflare
-      // error page instead of our JSON, breaking the client's res.json().
-      // The token save itself is fast and already durable by the time this
-      // responds; check /api/sync/status for the sync's actual outcome.
-      ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
-      return Response.json({ saved: true, syncTriggered: "started — check /api/sync/status for results" });
+      const sync = await triggerGithubSync(env);
+      return Response.json({
+        saved: true,
+        syncTriggered: sync.dispatched
+          ? "GitHub Actions workflow dispatched — check /api/sync/status shortly for results"
+          : `token saved, but failed to dispatch sync: ${sync.error}`,
+      });
     }
 
     if (url.pathname === "/api/config/export-urls" && request.method === "GET") {
@@ -196,11 +231,13 @@ export default {
       }
       const buffer = await file.arrayBuffer();
       const uploadResult = await handleMasterUpload(buffer, env, file.name);
-      // Same reasoning as /api/config/token above: don't await the
-      // follow-on export sync inline, it can outlive Cloudflare's edge
-      // timeout for the client's HTTP request.
-      ctx.waitUntil(runFullSync(env).catch((err) => console.error("runFullSync failed:", err)));
-      return Response.json({ upload: uploadResult, syncTriggered: "started — check /api/sync/status for results" });
+      const sync = await triggerGithubSync(env);
+      return Response.json({
+        upload: uploadResult,
+        syncTriggered: sync.dispatched
+          ? "GitHub Actions workflow dispatched — check /api/sync/status shortly for results"
+          : `upload saved, but failed to dispatch sync: ${sync.error}`,
+      });
     }
 
     // Agent-assignment upload: a wide matrix (one column per agent, cells
