@@ -17,6 +17,11 @@ export interface Env {
   DASHBOARD_ADMIN_KEY: string; // Dashboard login only — deliberately separate from ADMIN_API_KEY
   SELF_URL: string;
   INTERNAL_SECRET: string;
+  // Used only by upload-worker to kick off the GitHub Actions ETL run
+  // instead of running the sync inline — see triggerGithubSync in
+  // worker-upload/src/index.ts for why.
+  GITHUB_TOKEN?: string;
+  GITHUB_REPO?: string;
 }
 
 export type SourceName = "wallet" | "deposit" | "withdraw" | "manual_upload";
