@@ -16,6 +16,7 @@ import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
+import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import { renderLoginPage } from "./lib/loginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
 
@@ -92,6 +93,8 @@ export default {
           ? PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
           ? PLATFORM_ANALYSIS_CONTENT_HTML
+          : dashboardRoute.key === "search-user"
+          ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
         renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
@@ -1906,6 +1909,117 @@ export default {
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
         rows: rows.results,
       });
+    }
+
+    // Search User page. Read (search, agent list) stays here as usual —
+    // reassign-agent and ban/unban are narrow single-row writes tied to the
+    // dashboard session an admin is already using to search, unlike the
+    // bulk/config writes that live on upload-worker (full syncs, master
+    // uploads, bearer token). Requiring a separate Config login for a
+    // single UPDATE would be worse UX than the "single screen" this page
+    // is meant to be, and the blast radius here is one row, not the whole
+    // sync pipeline.
+    if (url.pathname === "/api/dashboard/search-user" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const userId = url.searchParams.get("userId");
+      if (!userId || !/^\d+$/.test(userId)) {
+        return Response.json({ error: "userId is required and must be numeric" }, { status: 400 });
+      }
+      const anchorDate = todayIST();
+
+      // Always returns the user regardless of is_banned — this page IS the
+      // tool admins use to find and unban someone, so hiding a banned
+      // user from its own direct-ID lookup would make unbanning impossible.
+      const user = await env.daily_records_db
+        .prepare(
+          `SELECT u.*, ${vipLevelCase("u.total_deposit")} as vip_level,
+                  (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE user_id = u.user_id AND date(create_time) = ? AND status = 'COMPLETE') as dep_today,
+                  (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE user_id = u.user_id AND date(create_time) = ? AND CAST(status AS REAL) = 2) as wd_today,
+                  (SELECT MAX(create_time) FROM deposits WHERE user_id = u.user_id AND status = 'COMPLETE') as last_deposit_time,
+                  (SELECT MAX(create_time) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as last_withdrawal_time,
+                  (SELECT COUNT(*) FROM deposits WHERE user_id = u.user_id AND status = 'COMPLETE') as deposit_txn_count,
+                  (SELECT COUNT(*) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as withdrawal_txn_count
+           FROM users u WHERE u.user_id = ?`
+        )
+        .bind(anchorDate, anchorDate, userId)
+        .first();
+
+      if (!user) {
+        return Response.json({ error: "No user found with that ID" }, { status: 404 });
+      }
+      return Response.json({ user });
+    }
+
+    // Distinct agent names already in use, for the Reassign Agent dropdown.
+    // No separate "Agent"/"Senior Agent" tier exists anywhere in this
+    // system's data (assigned_agent is a flat display-name string, populated
+    // via the agent-assignment spreadsheet upload) — the dropdown lists
+    // whatever real agent names are already assigned, plus "Unassigned".
+    if (url.pathname === "/api/dashboard/agents-list" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const rows = await env.daily_records_db
+        .prepare(`SELECT DISTINCT assigned_agent FROM users WHERE assigned_agent IS NOT NULL AND assigned_agent != '' ORDER BY assigned_agent`)
+        .all<{ assigned_agent: string }>();
+      return Response.json({ agents: rows.results.map((r) => r.assigned_agent) });
+    }
+
+    if (url.pathname === "/api/dashboard/reassign-agent" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const body = (await request.json()) as { userId?: string; agent?: string };
+      if (!body.userId || !/^\d+$/.test(body.userId)) {
+        return Response.json({ error: "userId is required and must be numeric" }, { status: 400 });
+      }
+      const agent = body.agent && body.agent !== "Unassigned" ? body.agent : null;
+      const result = await env.daily_records_db
+        .prepare(`UPDATE users SET assigned_agent = ? WHERE user_id = ?`)
+        .bind(agent, body.userId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No user found with that ID" }, { status: 404 });
+      }
+      return Response.json({ saved: true, userId: body.userId, agent: agent ?? "Unassigned" });
+    }
+
+    if (url.pathname === "/api/dashboard/ban-user" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const body = (await request.json()) as { userId?: string };
+      if (!body.userId || !/^\d+$/.test(body.userId)) {
+        return Response.json({ error: "userId is required and must be numeric" }, { status: 400 });
+      }
+      const result = await env.daily_records_db
+        .prepare(`UPDATE users SET is_banned = 1 WHERE user_id = ?`)
+        .bind(body.userId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No user found with that ID" }, { status: 404 });
+      }
+      return Response.json({ saved: true, userId: body.userId, is_banned: true });
+    }
+
+    if (url.pathname === "/api/dashboard/unban-user" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const body = (await request.json()) as { userId?: string };
+      if (!body.userId || !/^\d+$/.test(body.userId)) {
+        return Response.json({ error: "userId is required and must be numeric" }, { status: 400 });
+      }
+      const result = await env.daily_records_db
+        .prepare(`UPDATE users SET is_banned = 0 WHERE user_id = ?`)
+        .bind(body.userId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No user found with that ID" }, { status: 404 });
+      }
+      return Response.json({ saved: true, userId: body.userId, is_banned: false });
     }
 
     // Master DB analytics — its own URL, dashboard-area auth gate (it's an

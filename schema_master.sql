@@ -56,9 +56,17 @@ CREATE TABLE IF NOT EXISTS users (
   im_customer INTEGER,
   create_time TEXT,
   update_time TEXT,
-  package_id INTEGER
+  package_id INTEGER,
+  assigned_agent TEXT,
+  -- Dashboard-only ban flag, deliberately never written by the ETL sync
+  -- (unlike user_status, which the raw export overwrites every sync) so a
+  -- ban persists across re-syncs until an admin explicitly unbans. Banned
+  -- users are hidden from the Search User page's own listing; other
+  -- existing dashboard reports do not yet filter on this — follow-up work.
+  is_banned INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
 CREATE INDEX IF NOT EXISTS idx_users_update_time ON users(update_time);
 CREATE INDEX IF NOT EXISTS idx_users_inviter ON users(inviter_user_id);
+CREATE INDEX IF NOT EXISTS idx_users_is_banned ON users(is_banned);
