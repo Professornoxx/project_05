@@ -369,6 +369,23 @@ export default {
       return Response.json({ saved: true });
     }
 
+    if (url.pathname === "/api/config/agent-accounts/delete" && request.method === "POST") {
+      const authFail = requireAdmin(request, env);
+      if (authFail) return authFail;
+      const body = (await request.json()) as { agentId?: number };
+      if (!body.agentId) {
+        return Response.json({ error: "agentId is required" }, { status: 400 });
+      }
+      const result = await env.daily_records_db
+        .prepare(`DELETE FROM agent_accounts WHERE agent_id = ?`)
+        .bind(body.agentId)
+        .run();
+      if (result.meta.changes === 0) {
+        return Response.json({ error: "No account found with that ID" }, { status: 404 });
+      }
+      return Response.json({ deleted: true });
+    }
+
     return new Response("Not Found", { status: 404 });
   },
 };
