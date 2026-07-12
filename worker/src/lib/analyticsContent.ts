@@ -34,13 +34,24 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-hbar-axis-ticks { position: relative; height: 14px; font-size: 10px; color: #9ca3af; }
   .an-hbar-axis-ticks span { position: absolute; transform: translateX(-50%); }
 
-  .an-vbar-chart { position: relative; height: 300px; margin-top: 6px; padding-left: 56px; }
-  .an-vbar-gridline { position: absolute; left: 56px; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
+  /* Fixed-height chart with room reserved for the rotated axis labels
+     (padding-bottom) baked into the box instead of the bars/labels
+     spilling past it — that overflow was what forced the card to scroll.
+     Height responds to viewport width via clamp() instead of a flat
+     300px so the chart stays proportional on narrow/tablet layouts. */
+  .an-vbar-chart { position: relative; box-sizing: border-box; height: clamp(220px, 28vw, 300px); margin-top: 6px; padding: 4px 12px 54px 56px; overflow: hidden; }
+  .an-vbar-gridline { position: absolute; left: 56px; right: 12px; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
   .an-vbar-gridline span { position: absolute; left: -56px; top: -6px; width: 50px; text-align: right; }
-  .an-vbar-bars { position: absolute; left: 56px; right: 0; bottom: 26px; top: 0; display: flex; align-items: flex-end; gap: 10px; overflow-x: auto; }
-  .an-vbar-col { flex: 1; min-width: 40px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; position: relative; }
-  .an-vbar { width: 60%; min-height: 2px; border-radius: 4px 4px 0 0; background: #7c3aed; }
-  .an-vbar-label { position: absolute; bottom: -26px; font-size: 10px; color: #9ca3af; white-space: nowrap; transform: rotate(-25deg); transform-origin: top left; }
+  .an-vbar-bars { position: absolute; left: 56px; right: 12px; bottom: 54px; top: 4px; display: flex; align-items: flex-end; justify-content: space-evenly; gap: 6px; }
+  .an-vbar-col { flex: 1 1 0; max-width: 72px; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; position: relative; }
+  .an-vbar { width: 55%; min-height: 2px; border-radius: 4px 4px 0 0; background: #7c3aed; }
+  .an-vbar-label { position: absolute; left: 50%; top: 100%; margin-top: 8px; font-size: 10px; color: #9ca3af; white-space: nowrap; max-width: 90px; overflow: hidden; text-overflow: ellipsis; transform: rotate(-25deg); transform-origin: top left; }
+  @media (max-width: 480px) {
+    .an-vbar-chart { height: 260px; padding-left: 44px; }
+    .an-vbar-gridline, .an-vbar-gridline span { font-size: 9px; }
+    .an-vbar-gridline { left: 44px; }
+    .an-vbar-bars { left: 44px; }
+  }
 
   #anStatus { font-size: 12.5px; color: #9ca3af; margin-top: 4px; }
 </style>
