@@ -10,6 +10,8 @@ import { SEARCH_USER_SHARED_STYLES, SEARCH_USER_RESULT_PANEL_HTML, SEARCH_USER_S
 export const AGENT_SEARCH_USER_CONTENT_HTML = `
 ${SEARCH_USER_SHARED_STYLES}
 
+<div class="su-page">
+
 <div class="su-search-wrap">
   <span class="su-search-icon">🔍</span>
   <input class="su-search-input" id="suSearchInput" placeholder="Enter or paste a User ID..." />
@@ -19,6 +21,8 @@ ${SEARCH_USER_SHARED_STYLES}
 ${SEARCH_USER_RESULT_PANEL_HTML}
 
 <div id="suStatus" style="font-size:13px;color:#888;"></div>
+
+</div>
 
 <script>
 ${SEARCH_USER_SHARED_SCRIPT}

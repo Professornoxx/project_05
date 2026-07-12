@@ -17,6 +17,8 @@ import { SEARCH_USER_SHARED_STYLES, SEARCH_USER_RESULT_PANEL_HTML, SEARCH_USER_S
 export const SEARCH_USER_CONTENT_HTML = `
 ${SEARCH_USER_SHARED_STYLES}
 
+<div class="su-page">
+
 <div class="su-search-wrap">
   <span class="su-search-icon">🔍</span>
   <input class="su-search-input" id="suSearchInput" placeholder="Enter or paste a User ID..." />
@@ -28,6 +30,7 @@ ${SEARCH_USER_SHARED_STYLES}
   <div class="su-row">
     <input class="su-input" id="suReassignUserId" placeholder="User ID" />
     <select class="su-select" id="suAgentSelect"><option value="Unassigned">Un-Assigned</option></select>
+    <div class="su-row-spacer"></div>
     <button class="su-btn su-btn-save" id="suReassignBtn">💾 Save</button>
   </div>
   <div class="su-msg" id="suReassignMsg"></div>
@@ -38,6 +41,7 @@ ${SEARCH_USER_SHARED_STYLES}
   <div class="su-ban-note">Banning hides this user from every report, listing, export, and search on the dashboard -- their records are NOT deleted and keep updating normally in the background. Unban to make them visible again immediately, with full history intact.</div>
   <div class="su-row">
     <input class="su-input" id="suBanUserId" placeholder="User ID" />
+    <div class="su-row-spacer"></div>
     <button class="su-btn su-btn-ban" id="suBanBtn">🚫 Ban</button>
     <button class="su-btn su-btn-unban" id="suUnbanBtn">✅ Unban</button>
   </div>
@@ -47,6 +51,8 @@ ${SEARCH_USER_SHARED_STYLES}
 ${SEARCH_USER_RESULT_PANEL_HTML}
 
 <div id="suStatus" style="font-size:13px;color:#888;"></div>
+
+</div>
 
 <script>
 ${SEARCH_USER_SHARED_SCRIPT}
