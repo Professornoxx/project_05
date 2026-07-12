@@ -1,38 +1,21 @@
+import { SEARCH_USER_SHARED_STYLES, SEARCH_USER_RESULT_PANEL_HTML, SEARCH_USER_SHARED_SCRIPT } from "./searchUserShared";
+
 // Search User page. Matches the provided reference design: search bar,
 // Reassign Agent card, Ban/Unban User card (kept as-is per instruction),
-// and a full user-details panel below that appears once a search returns
-// a result. Data from /api/dashboard/search-user, /api/dashboard/agents-list,
-// /api/dashboard/reassign-agent, /api/dashboard/ban-user, /api/dashboard/unban-user.
+// and a full result panel below — header summary, Financial Overview,
+// Last 7 Days Activity (deposit/withdrawal line items), and Recent Games
+// & Bonuses. Data from /api/dashboard/search-user (user summary),
+// /api/dashboard/search-user-details (7-day activity + games/bonuses),
+// /api/dashboard/agents-list, /api/dashboard/reassign-agent,
+// /api/dashboard/ban-user, /api/dashboard/unban-user.
+//
+// NOTE: wallet_details has no BET/WIN "type" column — the source export
+// doesn't capture it (confirmed against live data: no field distinguishes
+// a stake from a payout, amounts are never negative). "Recent Games
+// Played" therefore lists game/amount/time without a type badge, unlike
+// the reference mockup's TYPE column.
 export const SEARCH_USER_CONTENT_HTML = `
-<style>
-  .su-search-wrap { background: #fff; border-radius: 10px; padding: 10px 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-  .su-search-icon { color: #999; font-size: 16px; }
-  .su-search-input { flex: 1; border: none; outline: none; font-size: 15px; padding: 8px 0; }
-  .su-search-btn { background: #4f46e5; color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .su-card { background: #fff; border-radius: 10px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
-  .su-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  .su-card-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; background: #eef0f7; }
-  .su-card-title { font-weight: 700; font-size: 13px; letter-spacing: 0.03em; text-transform: uppercase; }
-  .su-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .su-input, .su-select { border: 1px solid #ddd; border-radius: 8px; padding: 9px 12px; font-size: 14px; }
-  .su-input { flex: 1; min-width: 140px; }
-  .su-btn { border: none; padding: 9px 18px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .su-btn-save { background: #4f46e5; color: #fff; }
-  .su-btn-ban { background: #dc2626; color: #fff; }
-  .su-btn-unban { background: #16a34a; color: #fff; }
-  .su-card.ban { background: #fef2f2; border: 1px solid #fecaca; }
-  .su-card.ban .su-card-icon { background: #fee2e2; }
-  .su-ban-note { color: #b91c1c; font-size: 13px; line-height: 1.5; margin-bottom: 14px; }
-  .su-details-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-  .su-field { border-bottom: 1px solid #f0f0f0; padding-bottom: 10px; }
-  .su-field-label { font-size: 11px; text-transform: uppercase; color: #888; letter-spacing: 0.03em; margin-bottom: 4px; }
-  .su-field-value { font-size: 15px; font-weight: 600; }
-  .su-status-active { color: #15803d; }
-  .su-status-banned { color: #b91c1c; }
-  .su-msg { font-size: 13px; margin-top: 10px; }
-  .su-msg.ok { color: #15803d; }
-  .su-msg.err { color: #b91c1c; }
-</style>
+${SEARCH_USER_SHARED_STYLES}
 
 <div class="su-search-wrap">
   <span class="su-search-icon">🔍</span>
@@ -61,21 +44,12 @@ export const SEARCH_USER_CONTENT_HTML = `
   <div class="su-msg" id="suBanMsg"></div>
 </div>
 
-<div class="su-card" id="suDetailsCard" style="display:none;">
-  <div class="su-card-head"><span class="su-card-icon">📋</span><span class="su-card-title">User details</span></div>
-  <div class="su-details-grid" id="suDetailsGrid"></div>
-</div>
+${SEARCH_USER_RESULT_PANEL_HTML}
 
 <div id="suStatus" style="font-size:13px;color:#888;"></div>
 
 <script>
-function suFmtInr(n) { return n === null || n === undefined ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
-function suFmt(v) { return v === null || v === undefined || v === '' ? '—' : v; }
-function suField(label, value, cls) {
-  return '<div class="su-field"><div class="su-field-label">' + label + '</div><div class="su-field-value' + (cls ? ' ' + cls : '') + '">' + value + '</div></div>';
-}
-
-let suCurrentUser = null;
+${SEARCH_USER_SHARED_SCRIPT}
 
 async function suLoadAgents() {
   try {
@@ -90,59 +64,6 @@ async function suLoadAgents() {
       select.appendChild(opt);
     });
   } catch (e) {}
-}
-
-function suRenderDetails(u) {
-  suCurrentUser = u;
-  const grid = document.getElementById('suDetailsGrid');
-  const statusLabel = u.is_banned ? 'Banned' : 'Active';
-  const statusCls = u.is_banned ? 'su-status-banned' : 'su-status-active';
-  grid.innerHTML = [
-    suField('User ID', u.user_id),
-    suField('Username', suFmt(u.username)),
-    suField('Full name', suFmt(u.username)),
-    suField('Phone number', suFmt(u.phone)),
-    suField('Registration date', suFmt(u.create_time)),
-    suField('Current status', statusLabel, statusCls),
-    suField('Assigned agent', suFmt(u.assigned_agent) === '—' ? 'Unassigned' : u.assigned_agent),
-    suField('VIP level', 'VIP ' + u.vip_level),
-    suField('Wallet balance', suFmtInr(u.user_balance)),
-    suField('Total deposit', suFmtInr(u.total_deposit)),
-    suField('Total withdrawal', suFmtInr(u.total_withdrawal)),
-    suField('Deposit count', suFmt(u.deposit_txn_count)),
-    suField('Withdrawal count', suFmt(u.withdrawal_txn_count)),
-    suField("Today's deposit", suFmtInr(u.dep_today)),
-    suField("Today's withdrawal", suFmtInr(u.wd_today)),
-    suField('Last deposit', suFmt(u.last_deposit_time)),
-    suField('Last withdrawal', suFmt(u.last_withdrawal_time)),
-    suField('Last active', suFmt(u.last_active_time)),
-    suField('City', suFmt(u.city)),
-    suField('Email', suFmt(u.email)),
-    suField('Gender', suFmt(u.gender)),
-    suField('Register device', suFmt(u.register_device)),
-    suField('Register channel', suFmt(u.register_channel)),
-    suField('Member level (raw)', suFmt(u.member_level)),
-    suField('Test account', u.is_test_account ? 'Yes' : 'No'),
-  ].join('');
-  document.getElementById('suDetailsCard').style.display = '';
-  document.getElementById('suAgentSelect').value = u.assigned_agent || 'Unassigned';
-  document.getElementById('suReassignUserId').value = u.user_id;
-  document.getElementById('suBanUserId').value = u.user_id;
-}
-
-async function suSearch(userId) {
-  const statusEl = document.getElementById('suStatus');
-  if (!userId) return;
-  try {
-    const res = await fetch('/api/dashboard/search-user?userId=' + encodeURIComponent(userId));
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
-    suRenderDetails(d.user);
-    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
-  } catch (e) {
-    document.getElementById('suDetailsCard').style.display = 'none';
-    statusEl.textContent = 'Error: ' + e.message;
-  }
 }
 
 document.getElementById('suSearchBtn').onclick = () => suSearch(document.getElementById('suSearchInput').value.trim());
