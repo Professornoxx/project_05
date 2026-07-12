@@ -5,24 +5,27 @@
 
 export const SEARCH_USER_SHARED_STYLES = `
 <style>
-  .su-search-wrap { background: #fff; border-radius: 10px; padding: 10px 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
-  .su-search-icon { color: #999; font-size: 16px; }
-  .su-search-input { flex: 1; border: none; outline: none; font-size: 15px; padding: 8px 0; }
-  .su-search-btn { background: #4f46e5; color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
-  .su-card { background: #fff; border-radius: 10px; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
-  .su-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .su-page { max-width: 1180px; margin: 0 auto; }
+  .su-search-wrap { background: #fff; border-radius: 10px; padding: 12px 18px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  .su-search-icon { color: #999; font-size: 16px; flex-shrink: 0; }
+  .su-search-input { flex: 1; border: none; outline: none; font-size: 15px; padding: 8px 0; min-width: 0; }
+  .su-search-btn { background: #4f46e5; color: #fff; border: none; padding: 10px 26px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; flex-shrink: 0; }
+  .su-card { background: #fff; border-radius: 10px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
+  .su-card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
   .su-card-icon { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; background: #eef0f7; }
   .su-card-title { font-weight: 700; font-size: 13px; letter-spacing: 0.03em; text-transform: uppercase; }
   .su-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .su-input, .su-select { border: 1px solid #ddd; border-radius: 8px; padding: 9px 12px; font-size: 14px; }
-  .su-input { flex: 1; min-width: 140px; }
-  .su-btn { border: none; padding: 9px 18px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .su-input, .su-select { border: 1px solid #ddd; border-radius: 8px; padding: 9px 12px; font-size: 14px; box-sizing: border-box; }
+  .su-input { width: 280px; max-width: 100%; flex-shrink: 0; }
+  .su-select { width: 160px; flex-shrink: 0; }
+  .su-row-spacer { flex: 1; min-width: 0; }
+  .su-btn { border: none; padding: 9px 18px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; flex-shrink: 0; white-space: nowrap; }
   .su-btn-save { background: #4f46e5; color: #fff; }
   .su-btn-ban { background: #dc2626; color: #fff; }
   .su-btn-unban { background: #16a34a; color: #fff; }
   .su-card.ban { background: #fef2f2; border: 1px solid #fecaca; }
   .su-card.ban .su-card-icon { background: #fee2e2; }
-  .su-ban-note { color: #b91c1c; font-size: 13px; line-height: 1.5; margin-bottom: 14px; }
+  .su-ban-note { color: #b91c1c; font-size: 13px; line-height: 1.6; margin: 0 0 16px; max-width: 760px; }
   .su-msg { font-size: 13px; margin-top: 10px; }
   .su-msg.ok { color: #15803d; }
   .su-msg.err { color: #b91c1c; }
