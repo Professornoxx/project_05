@@ -17,11 +17,20 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-title { font-weight: 700; font-size: 15px; letter-spacing: 0.03em; text-transform: uppercase; color: #1f2430; }
   .an-tag { background: #dcfce7; color: #15803d; font-size: 11px; font-weight: 700; letter-spacing: 0.05em; padding: 5px 12px; border-radius: 20px; }
 
-  .an-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; }
+  .an-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; margin-bottom: 22px; align-items: stretch; }
   @media (max-width: 1000px) { .an-grid { grid-template-columns: 1fr; } }
-  .an-panel { background: #fff; border-left: 4px solid #4f46e5; border-radius: 0 14px 14px 0; padding: 20px 22px; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 2px 8px rgba(16,24,40,0.06); }
+  /* Grid's default align-items:stretch makes this panel match the height
+     of its (usually taller, row-count-driven) sibling — the region list
+     can run to 10 rows while the VIP chart is a fixed shape. Without
+     display:flex here, the chart inside stayed its own fixed height and
+     just left the stretched extra space empty at the card's bottom
+     instead of filling it — that's the "excess empty space, chart not
+     centered in the card" problem. flex-direction:column + the chart
+     taking flex:1 (see .an-vbar-chart) makes it fill whatever height the
+     card actually ends up. */
+  .an-panel { background: #fff; border-left: 4px solid #4f46e5; border-radius: 0 14px 14px 0; padding: 20px 22px; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 2px 8px rgba(16,24,40,0.06); display: flex; flex-direction: column; }
   .an-panel.accent-purple { border-left-color: #7c3aed; }
-  .an-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .an-panel-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-shrink: 0; }
   .an-panel-title { font-weight: 700; font-size: 13.5px; color: #1f2430; }
   .an-icon-badge { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; font-size: 15px; background: #e0e7ff; flex-shrink: 0; }
   .an-panel.accent-purple .an-icon-badge { background: #ede9fe; }
@@ -55,7 +64,7 @@ export const ANALYTICS_CONTENT_HTML = `
      .an-vbar-plot container with an explicit inset — both are positioned
      as percentages/flex-fill of THAT box, so 0%/100% means the same
      vertical position for both. */
-  .an-vbar-chart { position: relative; box-sizing: border-box; height: clamp(240px, 30vw, 320px); margin-top: 6px; }
+  .an-vbar-chart { position: relative; box-sizing: border-box; flex: 1 1 auto; min-height: 240px; margin-top: 6px; }
   .an-vbar-plot { position: absolute; left: 56px; right: 12px; top: 22px; bottom: 54px; }
   .an-vbar-gridline { position: absolute; left: 0; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
   .an-vbar-gridline span { position: absolute; left: -56px; top: -6px; width: 50px; text-align: right; }
@@ -64,7 +73,7 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-vbar { width: 55%; min-height: 2px; border-radius: 4px 4px 0 0; background: #7c3aed; }
   .an-vbar-label { position: absolute; left: 50%; top: 100%; margin-top: 8px; font-size: 10px; color: #9ca3af; white-space: nowrap; max-width: 90px; overflow: hidden; text-overflow: ellipsis; transform: rotate(-25deg); transform-origin: top left; }
   @media (max-width: 480px) {
-    .an-vbar-chart { height: 280px; }
+    .an-vbar-chart { min-height: 260px; }
     .an-vbar-gridline, .an-vbar-gridline span { font-size: 9px; }
     .an-vbar-plot { left: 44px; }
     .an-vbar-gridline span { left: -44px; width: 40px; }
