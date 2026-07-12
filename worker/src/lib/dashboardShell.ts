@@ -57,6 +57,36 @@ export function renderDashboardShell(
 <meta charset="UTF-8" />
 <title>${pageTitle} — Dashboard</title>
 <meta name="robots" content="noindex" />
+<script>
+// Every fetch from this page (shell script + all content-file fetches,
+// none of which know or care about this) gets an x-dashboard-mode header
+// so the server always checks the RIGHT session type for this page,
+// instead of guessing from whichever cookies happen to be in the
+// browser. Without this, a browser that's ever logged into both
+// /dashboard and /agent sends both session cookies on every request, and
+// one page's data silently gets scoped/unscoped by the other page's
+// leftover session — see requireDashboardOrAgentScope's comment in
+// index.ts for the two bugs this caused before this fix.
+//
+// MUST run before any content-file <script> executes — those call
+// fetch() immediately as the browser parses the page to load their data
+// on load. Putting this override at the bottom of <body> (where it lived
+// before) let every page's first data load race ahead of the override
+// and go out with no mode header at all, hitting the unscoped-cookie
+// fallback (confirmed live: this is why admin pages briefly/persistently
+// showed an agent's scoped data). <head> guarantees this runs first.
+(function () {
+  var mode = '${mode}';
+  var origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    init = init || {};
+    var headers = new Headers(init.headers || {});
+    headers.set('x-dashboard-mode', mode);
+    init.headers = headers;
+    return origFetch(input, init);
+  };
+})();
+</script>
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -151,27 +181,6 @@ export function renderDashboardShell(
   ${contentHtml}
 </div>
 <script>
-// Every fetch from this page (shell script + all content-file fetches,
-// none of which know or care about this) gets an x-dashboard-mode header
-// so the server always checks the RIGHT session type for this page,
-// instead of guessing from whichever cookies happen to be in the
-// browser. Without this, a browser that's ever logged into both
-// /dashboard and /agent sends both session cookies on every request, and
-// one page's data silently gets scoped/unscoped by the other page's
-// leftover session — see requireDashboardOrAgentScope's comment in
-// index.ts for the two bugs this caused before this fix.
-(function () {
-  var mode = '${mode}';
-  var origFetch = window.fetch.bind(window);
-  window.fetch = function (input, init) {
-    init = init || {};
-    var headers = new Headers(init.headers || {});
-    headers.set('x-dashboard-mode', mode);
-    init.headers = headers;
-    return origFetch(input, init);
-  };
-})();
-
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
   await fetch('${logoutUrl}', { method: 'POST' });
