@@ -11,24 +11,36 @@ export interface NavItem {
   href: string;
 }
 
+// Inline line-icons (stroke="currentColor") instead of emoji — emoji
+// render inconsistently across OSes/browsers (different art style per
+// platform, no control over weight/color) and can't participate in the
+// hover/active CSS transitions below. viewBox is a uniform 24x24 so every
+// icon sits identically inside .nav-icon regardless of its own shape.
+const ICON_HOME = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9a1 1 0 0 0 1 1H9a1 1 0 0 0 1-1v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 0 1 1h2.5a1 1 0 0 0 1-1v-9"/></svg>`;
+const ICON_ZAP = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg>`;
+const ICON_TROPHY = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4h8v6a4 4 0 0 1-8 0V4Z"/><path d="M8 5H5a2 2 0 0 0 0 4h3M16 5h3a2 2 0 0 1 0 4h-3"/><path d="M12 14v3M9 21h6M9.5 17.5h5l.5 3.5H9l.5-3.5Z"/></svg>`;
+const ICON_ANALYTICS = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V10M11 20V4M18 20v-7"/></svg>`;
+const ICON_GAMEPAD = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="7" width="19" height="11" rx="5"/><path d="M7 10v4M5 12h4"/><circle cx="16" cy="10.5" r="1"/><circle cx="18.5" cy="13" r="1"/></svg>`;
+const ICON_SEARCH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>`;
+
 export const NAV_ITEMS: NavItem[] = [
-  { key: "home", label: "Home", icon: "🏠", href: "/dashboard" },
-  { key: "action-center", label: "Action Center", icon: "⚡", href: "/dashboard/action-center" },
-  { key: "performance", label: "Performance", icon: "🏆", href: "/dashboard/performance" },
-  { key: "analytics", label: "Analytics", icon: "📊", href: "/dashboard/analytics" },
-  { key: "platform-analysis", label: "Platform Analysis", icon: "🎮", href: "/dashboard/platform-analysis" },
-  { key: "search-user", label: "Search User", icon: "🔍", href: "/dashboard/search-user" },
+  { key: "home", label: "Home", icon: ICON_HOME, href: "/dashboard" },
+  { key: "action-center", label: "Action Center", icon: ICON_ZAP, href: "/dashboard/action-center" },
+  { key: "performance", label: "Performance", icon: ICON_TROPHY, href: "/dashboard/performance" },
+  { key: "analytics", label: "Analytics", icon: ICON_ANALYTICS, href: "/dashboard/analytics" },
+  { key: "platform-analysis", label: "Platform Analysis", icon: ICON_GAMEPAD, href: "/dashboard/platform-analysis" },
+  { key: "search-user", label: "Search User", icon: ICON_SEARCH, href: "/dashboard/search-user" },
 ];
 
 // Agent Dashboard's restricted nav — the 5 pages the Agent role is scoped
 // to (no Platform Analysis, no Configuration). Same shell/styles as the
 // admin dashboard, just a different link set and logout target.
 export const AGENT_NAV_ITEMS: NavItem[] = [
-  { key: "home", label: "Home", icon: "🏠", href: "/agent" },
-  { key: "action-center", label: "Action Center", icon: "⚡", href: "/agent/action-center" },
-  { key: "performance", label: "Performance", icon: "🏆", href: "/agent/performance" },
-  { key: "analytics", label: "Analytics", icon: "📊", href: "/agent/analytics" },
-  { key: "search-user", label: "Search User", icon: "🔍", href: "/agent/search-user" },
+  { key: "home", label: "Home", icon: ICON_HOME, href: "/agent" },
+  { key: "action-center", label: "Action Center", icon: ICON_ZAP, href: "/agent/action-center" },
+  { key: "performance", label: "Performance", icon: ICON_TROPHY, href: "/agent/performance" },
+  { key: "analytics", label: "Analytics", icon: ICON_ANALYTICS, href: "/agent/analytics" },
+  { key: "search-user", label: "Search User", icon: ICON_SEARCH, href: "/agent/search-user" },
 ];
 
 function renderNav(activeKey: string, navItems: NavItem[]): string {
@@ -109,23 +121,59 @@ export function renderDashboardShell(
     padding: 20px 14px;
   }
   .nav-item {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     padding: 12px 14px;
     margin-bottom: 6px;
     border-radius: 10px;
     text-decoration: none;
-    color: #333;
+    color: #4b5060;
     font-size: 14px;
     font-weight: 500;
+    transition: background-color 0.18s ease, color 0.18s ease, transform 0.18s ease;
   }
-  .nav-item:hover { background: rgba(0,0,0,0.04); }
+  .nav-item:hover {
+    background: rgba(79, 70, 229, 0.08);
+    color: #4f46e5;
+    transform: translateX(3px);
+  }
+  .nav-item:active { transform: translateX(3px) scale(0.97); }
   .nav-item.active {
     background: #4f46e5;
     color: #fff;
+    box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3);
   }
-  .nav-icon { font-size: 15px; width: 18px; text-align: center; }
+  .nav-item.active:hover { transform: none; }
+  /* Left accent bar that grows in on the active item instead of just a
+     flat background swap — gives the selected state a bit more life
+     without turning into a distracting animation. */
+  .nav-item::before {
+    content: "";
+    position: absolute;
+    left: -14px;
+    top: 50%;
+    transform: translateY(-50%) scaleY(0);
+    width: 3px;
+    height: 60%;
+    border-radius: 0 3px 3px 0;
+    background: #4f46e5;
+    transition: transform 0.18s ease;
+  }
+  .nav-item.active::before { transform: translateY(-50%) scaleY(1); }
+  .nav-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.18s ease;
+  }
+  .nav-icon svg { width: 100%; height: 100%; }
+  .nav-item:hover .nav-icon { transform: scale(1.12); }
+  .nav-item.active .nav-icon { transform: scale(1.05); }
   .main {
     flex: 1;
     height: 100vh;
