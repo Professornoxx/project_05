@@ -71,7 +71,13 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-vbar-bars { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: flex-end; justify-content: space-evenly; gap: 6px; }
   .an-vbar-col { flex: 1 1 0; max-width: 72px; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; position: relative; }
   .an-vbar { width: 55%; min-height: 2px; border-radius: 4px 4px 0 0; background: #7c3aed; }
-  .an-vbar-label { position: absolute; left: 50%; top: 100%; margin-top: 8px; font-size: 10px; color: #9ca3af; white-space: nowrap; max-width: 90px; overflow: hidden; text-overflow: ellipsis; transform: rotate(-25deg); transform-origin: top left; }
+  /* Straight (unrotated), full-column-width, centered label instead of a
+     rotated one: rotate(-25deg) with transform-origin:top left pivots the
+     text away from its anchor point as it rotates, so the visible label
+     drifted right of the bar it belonged to instead of sitting under it.
+     Centering under the full column width and wrapping onto up to two
+     lines keeps each label locked directly beneath its own bar. */
+  .an-vbar-label { position: absolute; left: 0; right: 0; top: 100%; margin-top: 8px; font-size: 10px; line-height: 1.3; color: #9ca3af; text-align: center; overflow-wrap: break-word; }
   @media (max-width: 480px) {
     .an-vbar-chart { min-height: 260px; }
     .an-vbar-gridline, .an-vbar-gridline span { font-size: 9px; }
