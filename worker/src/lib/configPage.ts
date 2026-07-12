@@ -244,7 +244,8 @@ async function loadAgentAccounts() {
         + '<td style="padding:6px 4px;">' + (a.created_at || '').slice(0, 10) + '</td>'
         + '<td style="padding:6px 4px;">'
         + '<button class="toggleAcctBtn" data-id="' + a.agent_id + '" data-active="' + (active ? '1' : '0') + '">' + (active ? 'Disable' : 'Enable') + '</button> '
-        + '<button class="resetPwBtn" data-id="' + a.agent_id + '">Reset PW</button>'
+        + '<button class="resetPwBtn" data-id="' + a.agent_id + '">Reset PW</button> '
+        + '<button class="deleteAcctBtn" data-id="' + a.agent_id + '" data-username="' + a.login_username.replace(/"/g, '&quot;') + '">Delete</button>'
         + '</td></tr>';
     }).join('');
 
@@ -291,6 +292,32 @@ async function loadAgentAccounts() {
           if (!res.ok) throw new Error(data.error || res.statusText);
           statusEl.textContent = 'Password reset.';
           statusEl.className = 'status ok';
+        } catch (e) {
+          statusEl.textContent = 'Error: ' + e.message;
+          statusEl.className = 'status err';
+        }
+      };
+    });
+
+    tbody.querySelectorAll('.deleteAcctBtn').forEach((btn) => {
+      btn.onclick = async () => {
+        const statusEl = document.getElementById('agentAccountStatus');
+        const id = Number(btn.getAttribute('data-id'));
+        const username = btn.getAttribute('data-username');
+        if (!confirm('Delete the account "' + username + '"? This cannot be undone.')) return;
+        statusEl.textContent = 'Deleting...';
+        statusEl.className = 'status';
+        try {
+          const res = await fetch('/api/config/agent-accounts/delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ agentId: id }),
+          });
+          const data = await readJsonSafely(res);
+          if (!res.ok) throw new Error(data.error || res.statusText);
+          statusEl.textContent = 'Account deleted.';
+          statusEl.className = 'status ok';
+          loadAgentAccounts();
         } catch (e) {
           statusEl.textContent = 'Error: ' + e.message;
           statusEl.className = 'status err';
