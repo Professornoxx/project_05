@@ -2256,6 +2256,68 @@ export default {
       });
     }
 
+    // Bulk Ban/Unban Users (Search User page): same paste-from-Excel
+    // workflow as Bulk Reassign Agent above, one shared endpoint gated by
+    // a `banned` flag (mirrors the existing single-user ban-user/unban-user
+    // pair). Unlike bulk-reassign, this reports duplicate IDs explicitly
+    // in the response rather than silently dropping them, per the UI's
+    // "duplicate user IDs" summary line.
+    if (url.pathname === "/api/dashboard/bulk-ban-users" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const body = (await request.json()) as { userIds?: unknown; banned?: boolean };
+      if (!Array.isArray(body.userIds) || body.userIds.length === 0) {
+        return Response.json({ error: "userIds must be a non-empty array" }, { status: 400 });
+      }
+      if (typeof body.banned !== "boolean") {
+        return Response.json({ error: "banned (true/false) is required" }, { status: 400 });
+      }
+      const MAX_IDS = 2000;
+      if (body.userIds.length > MAX_IDS) {
+        return Response.json({ error: `Too many user IDs — max ${MAX_IDS} per bulk operation` }, { status: 400 });
+      }
+
+      const seen = new Set<string>();
+      const validIds: string[] = [];
+      const invalidEntries: string[] = [];
+      const duplicateIds: string[] = [];
+      for (const raw of body.userIds) {
+        const trimmed = String(raw).trim();
+        if (!trimmed) continue;
+        if (!/^\d+$/.test(trimmed)) {
+          invalidEntries.push(trimmed);
+          continue;
+        }
+        if (seen.has(trimmed)) {
+          duplicateIds.push(trimmed);
+          continue;
+        }
+        seen.add(trimmed);
+        validIds.push(trimmed);
+      }
+      if (validIds.length === 0) {
+        return Response.json({ error: "No valid numeric user IDs found in the pasted input", invalidEntries, duplicateIds }, { status: 400 });
+      }
+
+      const statements = validIds.map((id) =>
+        env.daily_records_db.prepare(`UPDATE users SET is_banned = ? WHERE user_id = ?`).bind(body.banned ? 1 : 0, id)
+      );
+      const results = await env.daily_records_db.batch(statements);
+      const notFoundIds = validIds.filter((_, i) => (results[i]?.meta.changes ?? 0) === 0);
+      const updatedCount = validIds.length - notFoundIds.length;
+
+      return Response.json({
+        saved: true,
+        banned: body.banned,
+        requested: body.userIds.length,
+        updated: updatedCount,
+        notFoundIds,
+        invalidEntries,
+        duplicateIds,
+      });
+    }
+
     if (url.pathname === "/api/dashboard/ban-user" && request.method === "POST") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
