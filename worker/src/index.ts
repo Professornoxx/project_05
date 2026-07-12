@@ -51,18 +51,35 @@ function requireAdmin(request: Request, env: Env, area: AuthArea): Response | nu
 // never a client-supplied value, so an agent can't request another
 // agent's data by editing query params.
 //
-// Agent session is checked FIRST, deliberately. dashboard_session and
-// agent_session are separate cookies on the same origin — if one browser
-// is logged into both /dashboard (admin) and /agent (as an agent), every
-// fetch from the /agent page sends BOTH cookies. Checking dashboard first
-// would resolve that request to unscoped admin data even though the page
-// being viewed is the agent-scoped one (confirmed live: /agent showed
-// full admin totals because an admin dashboard session was still active
-// in the same browser). An agent session, when present, must always win.
+// dashboard_session and agent_session are separate cookies on the same
+// origin, so a browser that's ever logged into BOTH /dashboard and /agent
+// sends both cookies on every request to either page — cookie presence
+// alone can't tell you which page the request came from. Checking one
+// session type unconditionally first broke the OTHER page: agent-first
+// made /dashboard show scoped data when an old agent cookie was still
+// around (this bug); dashboard-first made /agent show unscoped admin
+// data when an admin cookie was still around (the previous bug this was
+// "fixed" to solve). Neither ordering is correct — the page itself has
+// to say which mode it's rendering, via the x-dashboard-mode header the
+// shared shell script attaches to every fetch (see dashboardShell.ts).
+// The header only picks WHICH session to check; it can't forge one —
+// claiming "admin" mode with no valid dashboard_session still 401s.
 async function requireDashboardOrAgentScope(
   request: Request,
   env: Env
 ): Promise<{ agentFilter: string | null } | Response> {
+  const mode = request.headers.get("x-dashboard-mode");
+  if (mode === "admin") {
+    if (isAuthed(request, env, "dashboard")) return { agentFilter: null };
+    return new Response("Unauthorized", { status: 401 });
+  }
+  if (mode === "agent") {
+    const session = await getAgentSession(request, env);
+    if (session) return { agentFilter: session.displayName };
+    return new Response("Unauthorized", { status: 401 });
+  }
+  // No mode header (e.g. a direct curl call) — fall back to agent-first,
+  // the safer default when we can't tell which page asked.
   const session = await getAgentSession(request, env);
   if (session) return { agentFilter: session.displayName };
   if (isAuthed(request, env, "dashboard")) return { agentFilter: null };
@@ -124,7 +141,7 @@ export default {
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
       return new Response(
-        renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content),
+        renderDashboardShell(dashboardRoute.key, dashboardRoute.title, content, { mode: "admin" }),
         { headers: { "content-type": "text/html; charset=utf-8" } }
       );
     }
@@ -2381,6 +2398,7 @@ export default {
           navItems: AGENT_NAV_ITEMS,
           logoutUrl: "/agent/logout",
           loginUrl: "/agent/login",
+          mode: "agent",
         }),
         { headers: { "content-type": "text/html; charset=utf-8" } }
       );
