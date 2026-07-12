@@ -45,11 +45,12 @@ export function renderDashboardShell(
   activeKey: string,
   pageTitle: string,
   contentHtml: string,
-  opts?: { navItems?: NavItem[]; logoutUrl?: string; loginUrl?: string }
+  opts?: { navItems?: NavItem[]; logoutUrl?: string; loginUrl?: string; mode?: "admin" | "agent" }
 ): string {
   const navItems = opts?.navItems ?? NAV_ITEMS;
   const logoutUrl = opts?.logoutUrl ?? "/logout";
   const loginUrl = opts?.loginUrl ?? "/login";
+  const mode = opts?.mode ?? "admin";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -150,6 +151,27 @@ export function renderDashboardShell(
   ${contentHtml}
 </div>
 <script>
+// Every fetch from this page (shell script + all content-file fetches,
+// none of which know or care about this) gets an x-dashboard-mode header
+// so the server always checks the RIGHT session type for this page,
+// instead of guessing from whichever cookies happen to be in the
+// browser. Without this, a browser that's ever logged into both
+// /dashboard and /agent sends both session cookies on every request, and
+// one page's data silently gets scoped/unscoped by the other page's
+// leftover session — see requireDashboardOrAgentScope's comment in
+// index.ts for the two bugs this caused before this fix.
+(function () {
+  var mode = '${mode}';
+  var origFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    init = init || {};
+    var headers = new Headers(init.headers || {});
+    headers.set('x-dashboard-mode', mode);
+    init.headers = headers;
+    return origFetch(input, init);
+  };
+})();
+
 document.getElementById('logoutLink').onclick = async (e) => {
   e.preventDefault();
   await fetch('${logoutUrl}', { method: 'POST' });
