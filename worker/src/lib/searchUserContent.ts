@@ -71,6 +71,19 @@ ${SEARCH_USER_SHARED_STYLES}
   <div class="su-msg" id="suBanMsg"></div>
 </div>
 
+<div class="su-card ban">
+  <div class="su-card-head"><span class="su-card-icon">🚫</span><span class="su-card-title">Bulk ban / unban users</span></div>
+  <p style="font-size:13px;color:#666;margin:0 0 12px;">Copy a column of User IDs straight from Excel and paste them below — one ID per line (or comma/tab separated works too).</p>
+  <textarea class="su-bulk-textarea" id="suBulkBanTextarea" placeholder="e.g.&#10;104760&#10;267008&#10;25921&#10;..."></textarea>
+  <div class="su-bulk-row">
+    <span class="su-bulk-count" id="suBulkBanCount">0 IDs detected</span>
+    <div class="su-row-spacer"></div>
+    <button class="su-btn su-btn-ban" id="suBulkBanBtn">🚫 Bulk Ban</button>
+    <button class="su-btn su-btn-unban" id="suBulkUnbanBtn">✅ Bulk Unban</button>
+  </div>
+  <div class="su-bulk-result" id="suBulkBanResult"></div>
+</div>
+
 ${SEARCH_USER_RESULT_PANEL_HTML}
 
 <div id="suStatus" style="font-size:13px;color:#888;"></div>
@@ -145,6 +158,54 @@ document.getElementById('suBulkReassignBtn').onclick = async () => {
     resultEl.innerHTML = '<div class="su-bulk-result-summary err">Error: ' + e.message + '</div>';
   }
 };
+
+function suUpdateBulkBanCount() {
+  const ids = suParseBulkIds(document.getElementById('suBulkBanTextarea').value);
+  const numeric = ids.filter((id) => /^\\d+$/.test(id));
+  document.getElementById('suBulkBanCount').textContent =
+    numeric.length + ' ID' + (numeric.length === 1 ? '' : 's') + ' detected' +
+    (ids.length > numeric.length ? ' (' + (ids.length - numeric.length) + ' non-numeric will be skipped)' : '');
+}
+document.getElementById('suBulkBanTextarea').addEventListener('input', suUpdateBulkBanCount);
+
+async function suBulkSetBan(banned) {
+  const resultEl = document.getElementById('suBulkBanResult');
+  const rawEntries = suParseBulkIds(document.getElementById('suBulkBanTextarea').value);
+  if (rawEntries.length === 0) {
+    resultEl.innerHTML = '<div class="su-bulk-result-summary err">Paste at least one User ID first.</div>';
+    return;
+  }
+  const action = banned ? 'ban' : 'unban';
+  if (!confirm((banned ? 'Ban' : 'Unban') + ' ' + rawEntries.length + ' pasted user ID' + (rawEntries.length === 1 ? '' : 's') + '?')) return;
+  resultEl.innerHTML = '<div class="su-bulk-result-summary">Applying...</div>';
+  try {
+    const res = await fetch('/api/dashboard/bulk-ban-users', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userIds: rawEntries, banned }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+    let html = '<div class="su-bulk-result-summary ok">' + (banned ? 'Banned' : 'Unbanned') + ' ' + d.updated + ' of ' + d.requested + ' pasted ID' + (d.requested === 1 ? '' : 's') + '.</div>';
+    html += '<div class="su-bulk-detail" style="background:#f8fafc;border-color:#e2e8f0;color:#475569;">' +
+      'Total pasted: ' + d.requested + ' &middot; Processed: ' + d.updated + ' &middot; Skipped (not found): ' + d.notFoundIds.length +
+      ' &middot; Invalid: ' + d.invalidEntries.length + ' &middot; Duplicates: ' + d.duplicateIds.length + '</div>';
+    if (d.notFoundIds && d.notFoundIds.length > 0) {
+      html += '<div class="su-bulk-detail">' + d.notFoundIds.length + ' ID(s) not found: ' + d.notFoundIds.join(', ') + '</div>';
+    }
+    if (d.invalidEntries && d.invalidEntries.length > 0) {
+      html += '<div class="su-bulk-detail">' + d.invalidEntries.length + ' non-numeric entr' + (d.invalidEntries.length === 1 ? 'y' : 'ies') + ' skipped: ' + d.invalidEntries.join(', ') + '</div>';
+    }
+    if (d.duplicateIds && d.duplicateIds.length > 0) {
+      html += '<div class="su-bulk-detail">' + d.duplicateIds.length + ' duplicate ID(s) (only processed once): ' + d.duplicateIds.join(', ') + '</div>';
+    }
+    resultEl.innerHTML = html;
+    if (suCurrentUser && rawEntries.includes(String(suCurrentUser.user_id))) suSearch(String(suCurrentUser.user_id));
+  } catch (e) {
+    resultEl.innerHTML = '<div class="su-bulk-result-summary err">Error: ' + e.message + '</div>';
+  }
+}
+document.getElementById('suBulkBanBtn').onclick = () => suBulkSetBan(true);
+document.getElementById('suBulkUnbanBtn').onclick = () => suBulkSetBan(false);
 
 document.getElementById('suSearchBtn').onclick = () => suSearch(document.getElementById('suSearchInput').value.trim());
 document.getElementById('suSearchInput').addEventListener('keydown', (e) => {
