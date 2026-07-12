@@ -1246,7 +1246,6 @@ export default {
     if (url.pathname === "/api/dashboard/performance" && request.method === "GET") {
       const scope = await requireDashboardOrAgentScope(request, env);
       if (scope instanceof Response) return scope;
-      const { agentFilter } = scope;
 
       const anchorDate = url.searchParams.get("date") || todayIST();
       const rangeParam = url.searchParams.get("range") || "today";
@@ -1254,17 +1253,14 @@ export default {
       // cache the whole computed response for a short window. Source data
       // only changes on sync (roughly hourly), so this trades negligible
       // staleness for a big cut in repeat-load cost. See lib/cache.ts.
-      // The underlying query already groups by agent, so scoping for an
-      // agent session is just filtering the shared cached payload down to
-      // that agent's own rows — no need to re-run the SQL per agent.
+      //
+      // Deliberate exception to per-agent scoping: unlike every other
+      // Agent Dashboard page, Performance is shown UNSCOPED to agent
+      // sessions too — every agent sees the full leaderboard/daily table
+      // for all agents, same as the admin view. Confirmed explicitly by
+      // the user (2026-07-12): this is a one-page-only exception, every
+      // other agent-facing endpoint keeps its normal per-agent scoping.
       const payload = await cachedJson(env, `performance:${anchorDate}:${rangeParam}`, () => computePerformancePayload(env, anchorDate, rangeParam));
-      if (agentFilter) {
-        return Response.json({
-          ...payload,
-          dailyTable: payload.dailyTable.filter((r: { agent: string }) => r.agent === agentFilter),
-          monthlyLeaderboard: payload.monthlyLeaderboard.filter((r: { agent: string }) => r.agent === agentFilter),
-        });
-      }
       return Response.json(payload);
     }
     async function computePerformancePayload(env: Env, anchorDate: string, rangeParam: string) {
