@@ -106,7 +106,13 @@ export default {
     // a separate secret from the admin login, since this is server-to-
     // server, not something the browser/admin session should be able to hit.
     if (url.pathname === "/internal/write-chunk" && request.method === "POST") {
-      if (request.headers.get("x-internal-secret") !== env.INTERNAL_SECRET) {
+      // env.INTERNAL_SECRET being unset (undefined) must never authenticate
+      // — without this check, a request with the header simply omitted
+      // would satisfy `undefined !== undefined` as false and pass. This is
+      // exactly what happened to isAuthed() in auth.ts after a Worker
+      // rename left secrets unprovisioned on the new script name; see that
+      // fix's comment for the full incident.
+      if (!env.INTERNAL_SECRET || request.headers.get("x-internal-secret") !== env.INTERNAL_SECRET) {
         return new Response("Unauthorized", { status: 401 });
       }
       const body = (await request.json()) as { table?: string; rows?: ChunkRow[]; synced_at?: string };

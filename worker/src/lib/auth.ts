@@ -33,6 +33,14 @@ function parseCookies(request: Request): Record<string, string> {
 // hostname (workers.dev won't qualify).
 export function isAuthed(request: Request, env: Env, area: AuthArea): boolean {
   const key = expectedKey(env, area);
+  // An unset secret (env.DASHBOARD_ADMIN_KEY / env.ADMIN_API_KEY missing —
+  // e.g. a freshly-renamed Worker script that never had `wrangler secret
+  // put` run against its new name) must never authenticate. Without this
+  // guard, `key` is `undefined`, and a request with NO cookie at all has
+  // cookies[cookieName(area)] === undefined too — `undefined === undefined`
+  // is true, so every unauthenticated request silently passed. Confirmed
+  // live: this happened for real after renaming sync-worker/upload-worker.
+  if (!key) return false;
   const headerKey = request.headers.get("x-admin-key");
   if (headerKey && headerKey === key) return true;
   const cookies = parseCookies(request);
