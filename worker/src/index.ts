@@ -50,13 +50,22 @@ function requireAdmin(request: Request, env: Env, area: AuthArea): Response | nu
 // agents (agent session) are always scoped to their own assigned_agent —
 // never a client-supplied value, so an agent can't request another
 // agent's data by editing query params.
+//
+// Agent session is checked FIRST, deliberately. dashboard_session and
+// agent_session are separate cookies on the same origin — if one browser
+// is logged into both /dashboard (admin) and /agent (as an agent), every
+// fetch from the /agent page sends BOTH cookies. Checking dashboard first
+// would resolve that request to unscoped admin data even though the page
+// being viewed is the agent-scoped one (confirmed live: /agent showed
+// full admin totals because an admin dashboard session was still active
+// in the same browser). An agent session, when present, must always win.
 async function requireDashboardOrAgentScope(
   request: Request,
   env: Env
 ): Promise<{ agentFilter: string | null } | Response> {
-  if (isAuthed(request, env, "dashboard")) return { agentFilter: null };
   const session = await getAgentSession(request, env);
   if (session) return { agentFilter: session.displayName };
+  if (isAuthed(request, env, "dashboard")) return { agentFilter: null };
   return new Response("Unauthorized", { status: 401 });
 }
 
