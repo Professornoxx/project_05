@@ -58,17 +58,22 @@ export function renderDashboardShell(
 <meta name="robots" content="noindex" />
 <style>
   * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    overflow: hidden; /* the page itself never scrolls — .main does */
+  }
   body {
     font-family: system-ui, -apple-system, sans-serif;
     margin: 0;
     background: #eef0f7;
     color: #1f2430;
     display: flex;
-    min-height: 100vh;
   }
   .sidebar {
     width: 220px;
     flex-shrink: 0;
+    height: 100vh;
+    overflow-y: auto;
     background: #eef0f7;
     padding: 20px 14px;
   }
@@ -92,9 +97,24 @@ export function renderDashboardShell(
   .nav-icon { font-size: 15px; width: 18px; text-align: center; }
   .main {
     flex: 1;
-    padding: 32px 40px;
+    height: 100vh;
+    overflow-y: auto; /* the page's actual scroll container — sidebar and header-row stay put */
+    padding: 0 40px 32px;
   }
   .main h1 { font-size: 22px; margin-top: 0; }
+  .header-row {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: #eef0f7;
+    padding: 32px 0 16px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
   .placeholder {
     border: 1px dashed #c7cbe0;
     border-radius: 10px;
@@ -111,7 +131,6 @@ export function renderDashboardShell(
     color: #666;
     text-decoration: none;
   }
-  .header-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .last-sync { font-size: 12px; padding: 6px 12px; border-radius: 16px; display: inline-flex; align-items: center; gap: 6px; }
   .last-sync.fresh { background: #dcfce7; color: #15803d; }
   .last-sync.stale { background: #fee2e2; color: #b91c1c; }
