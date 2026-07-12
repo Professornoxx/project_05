@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "upload-worker",
+  "name": "brightpath-config",
   "main": "src/index.ts",
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -65,7 +65,7 @@
     // Points at THIS Worker's own deployed URL now (not sync-worker's) —
     // /internal/write-chunk moved here too, so the chunked-upsert self-fetch
     // in chunkedUpsert.ts must call back into this same Worker instance.
-    "SELF_URL": "https://upload-worker.prightpath-attendance.workers.dev",
+    "SELF_URL": "https://brightpath-config.prightpath-attendance.workers.dev",
     // Used by triggerGithubSync (see src/index.ts) to dispatch the ETL
     // workflow via GitHub's API instead of running the sync inline —
     // GITHUB_TOKEN itself is a secret (wrangler secret put), not a var.
