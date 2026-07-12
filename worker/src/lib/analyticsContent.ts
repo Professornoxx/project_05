@@ -26,13 +26,20 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-icon-badge { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 50%; font-size: 15px; background: #e0e7ff; flex-shrink: 0; }
   .an-panel.accent-purple .an-icon-badge { background: #ede9fe; }
 
-  .an-hbar-row { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .an-hbar-row { display: grid; grid-template-columns: minmax(90px, 140px) 1fr; align-items: center; gap: 10px; margin-bottom: 8px; }
   .an-hbar-label { font-size: 12px; color: #374151; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .an-hbar-track { position: relative; height: 22px; background: #f3f4f6; border-radius: 4px; }
   .an-hbar-fill { position: absolute; top: 0; left: 0; bottom: 0; background: #3b82f6; border-radius: 4px; min-width: 2px; }
-  .an-hbar-axis { display: grid; grid-template-columns: 140px 1fr; margin-top: 6px; }
-  .an-hbar-axis-ticks { position: relative; height: 14px; font-size: 10px; color: #9ca3af; }
+  .an-hbar-axis { display: grid; grid-template-columns: minmax(90px, 140px) 1fr; margin-top: 6px; }
+  .an-hbar-axis-ticks { position: relative; height: 14px; font-size: 10px; color: #9ca3af; overflow: visible; }
+  /* Centering every tick with translateX(-50%) pushes the FIRST (left:0%)
+     and LAST (left:100%) ticks half their own width past the chart's
+     edges — the first overlapped the region-name column, the last spilled
+     past the card's right border. Edge ticks anchor to their own edge
+     instead of centering; everything in between still centers normally. */
   .an-hbar-axis-ticks span { position: absolute; transform: translateX(-50%); }
+  .an-hbar-axis-ticks span:first-child { transform: translateX(0); }
+  .an-hbar-axis-ticks span:last-child { transform: translateX(-100%); }
 
   /* Fixed-height chart with room reserved for the rotated axis labels
      (padding-bottom) baked into the box instead of the bars/labels
