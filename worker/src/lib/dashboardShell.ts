@@ -204,12 +204,32 @@ export function renderDashboardShell(
     margin-top: 20px;
   }
   .logout {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     margin-top: 20px;
-    font-size: 12px;
-    color: #666;
+    padding: 11px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #b91c1c;
+    background: rgba(185, 28, 28, 0.06);
+    border: 1px solid rgba(185, 28, 28, 0.18);
     text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
   }
+  .logout:hover {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #fff;
+    transform: translateX(3px);
+    box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+  }
+  .logout:active { transform: translateX(3px) scale(0.96); }
+  .logout-icon { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; transition: transform 0.18s ease; }
+  .logout-icon svg { width: 100%; height: 100%; }
+  .logout:hover .logout-icon { transform: translateX(2px); }
   .last-sync { font-size: 12px; padding: 6px 12px; border-radius: 16px; display: inline-flex; align-items: center; gap: 6px; }
   .last-sync.fresh { background: #dcfce7; color: #15803d; }
   .last-sync.stale { background: #fee2e2; color: #b91c1c; }
@@ -219,7 +239,10 @@ export function renderDashboardShell(
 <body>
 <div class="sidebar">
   ${renderNav(activeKey, navItems)}
-  <a href="#" class="logout" id="logoutLink">Log out</a>
+  <a href="#" class="logout" id="logoutLink">
+    <span class="logout-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg></span>
+    Log out
+  </a>
 </div>
 <div class="main">
   <div class="header-row">
