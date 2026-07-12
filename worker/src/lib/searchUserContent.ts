@@ -16,6 +16,16 @@ import { SEARCH_USER_SHARED_STYLES, SEARCH_USER_RESULT_PANEL_HTML, SEARCH_USER_S
 // the reference mockup's TYPE column.
 export const SEARCH_USER_CONTENT_HTML = `
 ${SEARCH_USER_SHARED_STYLES}
+<style>
+  .su-bulk-textarea { width: 100%; box-sizing: border-box; min-height: 140px; border: 1px solid #ddd; border-radius: 8px; padding: 10px 12px; font-size: 13px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; margin-bottom: 12px; }
+  .su-bulk-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .su-bulk-count { font-size: 12px; color: #888; }
+  .su-bulk-result { margin-top: 14px; font-size: 13px; }
+  .su-bulk-result-summary { font-weight: 700; margin-bottom: 6px; }
+  .su-bulk-result-summary.ok { color: #15803d; }
+  .su-bulk-result-summary.err { color: #b91c1c; }
+  .su-bulk-detail { font-size: 12px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; padding: 8px 12px; margin-top: 6px; word-break: break-word; }
+</style>
 
 <div class="su-page">
 
@@ -34,6 +44,19 @@ ${SEARCH_USER_SHARED_STYLES}
     <button class="su-btn su-btn-save" id="suReassignBtn">💾 Save</button>
   </div>
   <div class="su-msg" id="suReassignMsg"></div>
+</div>
+
+<div class="su-card">
+  <div class="su-card-head"><span class="su-card-icon">📋</span><span class="su-card-title">Bulk reassign agent</span></div>
+  <p style="font-size:13px;color:#666;margin:0 0 12px;">Copy a column of User IDs straight from Excel and paste them below — one ID per line (or comma/tab separated works too).</p>
+  <textarea class="su-bulk-textarea" id="suBulkTextarea" placeholder="e.g.&#10;104760&#10;267008&#10;25921&#10;..."></textarea>
+  <div class="su-bulk-row">
+    <select class="su-select" id="suBulkAgentSelect"><option value="Unassigned">Un-Assigned</option></select>
+    <span class="su-bulk-count" id="suBulkCount">0 IDs detected</span>
+    <div class="su-row-spacer"></div>
+    <button class="su-btn su-btn-save" id="suBulkReassignBtn">💾 Apply to all</button>
+  </div>
+  <div class="su-bulk-result" id="suBulkResult"></div>
 </div>
 
 <div class="su-card ban">
@@ -62,15 +85,66 @@ async function suLoadAgents() {
     const res = await fetch('/api/dashboard/agents-list');
     const d = await res.json();
     if (!res.ok) return;
-    const select = document.getElementById('suAgentSelect');
-    (d.agents || []).forEach((a) => {
-      const opt = document.createElement('option');
-      opt.value = a;
-      opt.textContent = a;
-      select.appendChild(opt);
+    ['suAgentSelect', 'suBulkAgentSelect'].forEach((selectId) => {
+      const select = document.getElementById(selectId);
+      (d.agents || []).forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = a;
+        opt.textContent = a;
+        select.appendChild(opt);
+      });
     });
   } catch (e) {}
 }
+
+// Splits on any whitespace or comma so a pasted Excel column (newlines),
+// a single row copied across cells (tabs), or a comma-separated list all
+// parse the same way. Blank entries are dropped here; non-numeric
+// entries are still sent through so the backend can report exactly what
+// it skipped instead of silently dropping them client-side.
+function suParseBulkIds(text) {
+  return text.split(/[\\s,]+/).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
+function suUpdateBulkCount() {
+  const ids = suParseBulkIds(document.getElementById('suBulkTextarea').value);
+  const numeric = ids.filter((id) => /^\\d+$/.test(id));
+  document.getElementById('suBulkCount').textContent =
+    numeric.length + ' ID' + (numeric.length === 1 ? '' : 's') + ' detected' +
+    (ids.length > numeric.length ? ' (' + (ids.length - numeric.length) + ' non-numeric will be skipped)' : '');
+}
+document.getElementById('suBulkTextarea').addEventListener('input', suUpdateBulkCount);
+
+document.getElementById('suBulkReassignBtn').onclick = async () => {
+  const resultEl = document.getElementById('suBulkResult');
+  const ids = suParseBulkIds(document.getElementById('suBulkTextarea').value);
+  const agent = document.getElementById('suBulkAgentSelect').value;
+  if (ids.length === 0) {
+    resultEl.innerHTML = '<div class="su-bulk-result-summary err">Paste at least one User ID first.</div>';
+    return;
+  }
+  if (!confirm('Reassign ' + ids.length + ' user' + (ids.length === 1 ? '' : 's') + ' to "' + agent + '"?')) return;
+  resultEl.innerHTML = '<div class="su-bulk-result-summary">Applying...</div>';
+  try {
+    const res = await fetch('/api/dashboard/bulk-reassign-agent', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userIds: ids, agent }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+    let html = '<div class="su-bulk-result-summary ok">Reassigned ' + d.updated + ' of ' + d.requested + ' to ' + d.agent + '.</div>';
+    if (d.notFoundIds && d.notFoundIds.length > 0) {
+      html += '<div class="su-bulk-detail">' + d.notFoundIds.length + ' ID(s) not found: ' + d.notFoundIds.join(', ') + '</div>';
+    }
+    if (d.invalidEntries && d.invalidEntries.length > 0) {
+      html += '<div class="su-bulk-detail">' + d.invalidEntries.length + ' non-numeric entr' + (d.invalidEntries.length === 1 ? 'y' : 'ies') + ' skipped: ' + d.invalidEntries.join(', ') + '</div>';
+    }
+    resultEl.innerHTML = html;
+    if (suCurrentUser && ids.includes(String(suCurrentUser.user_id))) suSearch(String(suCurrentUser.user_id));
+  } catch (e) {
+    resultEl.innerHTML = '<div class="su-bulk-result-summary err">Error: ' + e.message + '</div>';
+  }
+};
 
 document.getElementById('suSearchBtn').onclick = () => suSearch(document.getElementById('suSearchInput').value.trim());
 document.getElementById('suSearchInput').addEventListener('keydown', (e) => {

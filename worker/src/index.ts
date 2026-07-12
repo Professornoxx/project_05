@@ -2196,6 +2196,66 @@ export default {
       return Response.json({ saved: true, userId: body.userId, agent: agent ?? "Unassigned" });
     }
 
+    // Bulk Reassign Agent (Search User page): reassigns many users to one
+    // agent in a single request — built for pasting a column of user IDs
+    // copied straight out of Excel. Each ID becomes its own tiny UPDATE
+    // (2 bound params) run via D1's .batch() rather than one big
+    // WHERE user_id IN (...) statement, sidestepping D1's ~100-bound-
+    // parameter-per-statement ceiling (see etl/sync_engine.py's comment
+    // on the same limit) without needing to chunk manually.
+    if (url.pathname === "/api/dashboard/bulk-reassign-agent" && request.method === "POST") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const body = (await request.json()) as { userIds?: unknown; agent?: string };
+      if (!Array.isArray(body.userIds) || body.userIds.length === 0) {
+        return Response.json({ error: "userIds must be a non-empty array" }, { status: 400 });
+      }
+      const MAX_IDS = 2000;
+      if (body.userIds.length > MAX_IDS) {
+        return Response.json({ error: `Too many user IDs — max ${MAX_IDS} per bulk reassignment` }, { status: 400 });
+      }
+      const agent = body.agent && body.agent !== "Unassigned" ? body.agent : null;
+
+      // De-dupe (a pasted column can easily have repeats) and split
+      // numeric-looking entries from junk (blank lines, headers, stray
+      // text) so the response can tell the admin exactly what it skipped
+      // instead of silently ignoring bad rows.
+      const seen = new Set<string>();
+      const validIds: string[] = [];
+      const invalidEntries: string[] = [];
+      for (const raw of body.userIds) {
+        const trimmed = String(raw).trim();
+        if (!trimmed) continue;
+        if (!/^\d+$/.test(trimmed)) {
+          invalidEntries.push(trimmed);
+          continue;
+        }
+        if (seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        validIds.push(trimmed);
+      }
+      if (validIds.length === 0) {
+        return Response.json({ error: "No valid numeric user IDs found in the pasted input", invalidEntries }, { status: 400 });
+      }
+
+      const statements = validIds.map((id) =>
+        env.daily_records_db.prepare(`UPDATE users SET assigned_agent = ? WHERE user_id = ?`).bind(agent, id)
+      );
+      const results = await env.daily_records_db.batch(statements);
+      const notFoundIds = validIds.filter((_, i) => (results[i]?.meta.changes ?? 0) === 0);
+      const updatedCount = validIds.length - notFoundIds.length;
+
+      return Response.json({
+        saved: true,
+        agent: agent ?? "Unassigned",
+        requested: body.userIds.length,
+        updated: updatedCount,
+        notFoundIds,
+        invalidEntries,
+      });
+    }
+
     if (url.pathname === "/api/dashboard/ban-user" && request.method === "POST") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
