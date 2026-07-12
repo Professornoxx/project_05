@@ -1,8 +1,6 @@
 // Action Center section 1: VIP Near Upgrade — two panels (Low: VIP 2-4,
 // gap Rs 1-1,000; High: VIP 5-13, gap Rs 1-50,000), matching the provided
 // reference design. Data from /api/dashboard/action-center/vip-near-upgrade.
-// Agent always shows "Unassigned" — no real agent-assignment data source
-// exists yet. "Agents in Assign" panel is a placeholder pending that data.
 export const ACTION_CENTER_CONTENT_HTML = `
 <style>
   .ac-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -22,15 +20,12 @@ export const ACTION_CENTER_CONTENT_HTML = `
   .ac-pager { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 12px; color: #666; }
   .ac-pager button { border: 1px solid #ddd; background: #fff; border-radius: 16px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
   .ac-pager button:disabled { opacity: 0.4; cursor: default; }
-  .ac-placeholder { border: 1px dashed #c7cbe0; border-radius: 10px; padding: 24px; text-align: center; color: #888; font-size: 13px; margin-bottom: 20px; }
 </style>
 
 <div class="ac-header">
   <div style="font-weight:700;font-size:15px;letter-spacing:0.03em;text-transform:uppercase;">VIP Near Upgrade</div>
   <div class="ac-tag">ACTION CENTER</div>
 </div>
-
-<div class="ac-placeholder">Agents in Assign — coming soon, pending agent-assignment data.</div>
 
 <div class="ac-grid">
   <div class="ac-panel">
