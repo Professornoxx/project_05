@@ -41,23 +41,33 @@ export const ANALYTICS_CONTENT_HTML = `
   .an-hbar-axis-ticks span:first-child { transform: translateX(0); }
   .an-hbar-axis-ticks span:last-child { transform: translateX(-100%); }
 
-  /* Fixed-height chart with room reserved for the rotated axis labels
-     (padding-bottom) baked into the box instead of the bars/labels
-     spilling past it — that overflow was what forced the card to scroll.
-     Height responds to viewport width via clamp() instead of a flat
-     300px so the chart stays proportional on narrow/tablet layouts. */
-  .an-vbar-chart { position: relative; box-sizing: border-box; height: clamp(220px, 28vw, 300px); margin-top: 6px; padding: 4px 12px 54px 56px; overflow: hidden; }
-  .an-vbar-gridline { position: absolute; left: 56px; right: 12px; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
+  /* Gridlines and bars used to be positioned independently within
+     .an-vbar-chart: bars via a fixed-pixel bottom offset (correctly
+     reserving footer space for the rotated labels), gridlines via a
+     bottom:X% that resolves against the WHOLE box height regardless of
+     padding (a CSS quirk — percentage offsets on absolutely positioned
+     elements are relative to the padding box's own edges, so padding
+     does not shift where a percentage-positioned sibling lands). The two
+     coordinate systems didn't match: the "₹0" gridline landed well below
+     where the bars actually started, overlapping the rotated axis
+     labels, and the top gridline sat too close to the box edge and got
+     clipped by overflow:hidden. Fix: gridlines and bars now share one
+     .an-vbar-plot container with an explicit inset — both are positioned
+     as percentages/flex-fill of THAT box, so 0%/100% means the same
+     vertical position for both. */
+  .an-vbar-chart { position: relative; box-sizing: border-box; height: clamp(240px, 30vw, 320px); margin-top: 6px; }
+  .an-vbar-plot { position: absolute; left: 56px; right: 12px; top: 22px; bottom: 54px; }
+  .an-vbar-gridline { position: absolute; left: 0; right: 0; border-top: 1px solid #f0f1f4; font-size: 10px; color: #9ca3af; }
   .an-vbar-gridline span { position: absolute; left: -56px; top: -6px; width: 50px; text-align: right; }
-  .an-vbar-bars { position: absolute; left: 56px; right: 12px; bottom: 54px; top: 4px; display: flex; align-items: flex-end; justify-content: space-evenly; gap: 6px; }
+  .an-vbar-bars { position: absolute; left: 0; right: 0; top: 0; bottom: 0; display: flex; align-items: flex-end; justify-content: space-evenly; gap: 6px; }
   .an-vbar-col { flex: 1 1 0; max-width: 72px; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; position: relative; }
   .an-vbar { width: 55%; min-height: 2px; border-radius: 4px 4px 0 0; background: #7c3aed; }
   .an-vbar-label { position: absolute; left: 50%; top: 100%; margin-top: 8px; font-size: 10px; color: #9ca3af; white-space: nowrap; max-width: 90px; overflow: hidden; text-overflow: ellipsis; transform: rotate(-25deg); transform-origin: top left; }
   @media (max-width: 480px) {
-    .an-vbar-chart { height: 260px; padding-left: 44px; }
+    .an-vbar-chart { height: 280px; }
     .an-vbar-gridline, .an-vbar-gridline span { font-size: 9px; }
-    .an-vbar-gridline { left: 44px; }
-    .an-vbar-bars { left: 44px; }
+    .an-vbar-plot { left: 44px; }
+    .an-vbar-gridline span { left: -44px; width: 40px; }
   }
 
   #anStatus { font-size: 12.5px; color: #9ca3af; margin-top: 4px; }
@@ -149,7 +159,10 @@ function anRenderVipChart(rows) {
       '</div>';
   }).join('');
 
-  document.getElementById('anVipChart').innerHTML = gridHtml + '<div class="an-vbar-bars">' + (barsHtml || '<div style="color:#888;font-size:13px;">No data</div>') + '</div>';
+  document.getElementById('anVipChart').innerHTML =
+    '<div class="an-vbar-plot">' + gridHtml +
+    '<div class="an-vbar-bars">' + (barsHtml || '<div style="color:#888;font-size:13px;">No data</div>') + '</div>' +
+    '</div>';
 }
 
 async function loadAnalytics(date) {
