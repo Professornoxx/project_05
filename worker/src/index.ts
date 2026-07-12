@@ -2059,6 +2059,96 @@ export default {
       return Response.json({ user });
     }
 
+    // Search User detail panel (redesigned per reference layout): financial
+    // overview (lifetime + last-7-days), the last 7 days' deposit and
+    // withdrawal line items, and wallet_details activity split into real
+    // gameplay (source_name populated) vs bonus claims (source_name blank
+    // — see the bonus-claim comment on wallet_details' schema). Same
+    // agent-scoping rule as /api/dashboard/search-user: an agent can only
+    // pull this for their own assigned users.
+    if (url.pathname === "/api/dashboard/search-user-details" && request.method === "GET") {
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
+
+      const userId = url.searchParams.get("userId");
+      if (!userId || !/^\d+$/.test(userId)) {
+        return Response.json({ error: "userId is required and must be numeric" }, { status: 400 });
+      }
+
+      const ownerCheck = await env.daily_records_db
+        .prepare(`SELECT 1 FROM users WHERE user_id = ? AND (? IS NULL OR assigned_agent = ?)`)
+        .bind(userId, agentFilter, agentFilter)
+        .first();
+      if (!ownerCheck) {
+        return Response.json({ error: "No user found with that ID" }, { status: 404 });
+      }
+
+      const sevenDaysAgo = (() => {
+        const d = new Date(); d.setUTCDate(d.getUTCDate() - 7); return d.toISOString();
+      })();
+      const twoDaysAgo = (() => {
+        const d = new Date(); d.setUTCDate(d.getUTCDate() - 2); return d.toISOString();
+      })();
+
+      const [last7Agg, deposits, withdrawals, games, bonuses] = await Promise.all([
+        env.daily_records_db
+          .prepare(
+            `SELECT
+               (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE user_id = ? AND create_time >= ? AND status = 'COMPLETE') as dep_total,
+               (SELECT COUNT(*) FROM deposits WHERE user_id = ? AND create_time >= ? AND status = 'COMPLETE') as dep_count,
+               (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE user_id = ? AND create_time >= ? AND CAST(status AS REAL) = 2) as wd_total`
+          )
+          .bind(userId, sevenDaysAgo, userId, sevenDaysAgo, userId, sevenDaysAgo)
+          .first<{ dep_total: number; dep_count: number; wd_total: number }>(),
+        env.daily_records_db
+          .prepare(
+            `SELECT record_key as order_no, amount, status, create_time, channel
+             FROM deposits WHERE user_id = ? AND create_time >= ? ORDER BY create_time DESC LIMIT 100`
+          )
+          .bind(userId, sevenDaysAgo)
+          .all(),
+        env.daily_records_db
+          .prepare(
+            `SELECT record_key as order_no, amount, status, create_time, channel
+             FROM withdrawals WHERE user_id = ? AND create_time >= ? ORDER BY create_time DESC LIMIT 100`
+          )
+          .bind(userId, sevenDaysAgo)
+          .all(),
+        env.daily_records_db
+          .prepare(
+            `SELECT game_name, amount, create_time
+             FROM wallet_details WHERE user_id = ? AND create_time >= ?
+               AND game_name IS NOT NULL AND game_name != '' AND source_name IS NOT NULL AND source_name != ''
+             ORDER BY create_time DESC LIMIT 100`
+          )
+          .bind(userId, twoDaysAgo)
+          .all(),
+        env.daily_records_db
+          .prepare(
+            `SELECT game_name as bonus_name, amount, create_time
+             FROM wallet_details WHERE user_id = ? AND create_time >= ?
+               AND game_name IS NOT NULL AND game_name != '' AND (source_name IS NULL OR source_name = '')
+             ORDER BY create_time DESC LIMIT 100`
+          )
+          .bind(userId, sevenDaysAgo)
+          .all(),
+      ]);
+
+      return Response.json({
+        last7Days: {
+          deposits: last7Agg?.dep_total ?? 0,
+          depositCount: last7Agg?.dep_count ?? 0,
+          withdrawals: last7Agg?.wd_total ?? 0,
+          net: (last7Agg?.dep_total ?? 0) - (last7Agg?.wd_total ?? 0),
+        },
+        deposits: deposits.results,
+        withdrawals: withdrawals.results,
+        games: games.results,
+        bonuses: bonuses.results,
+      });
+    }
+
     // Distinct agent names already in use, for the Reassign Agent dropdown.
     // No separate "Agent"/"Senior Agent" tier exists anywhere in this
     // system's data (assigned_agent is a flat display-name string, populated
