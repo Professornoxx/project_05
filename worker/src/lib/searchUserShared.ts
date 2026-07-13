@@ -233,10 +233,10 @@ async function suSearch(userId) {
     suRenderBonuses(details.bonuses);
 
     document.getElementById('suDetailsCard').style.display = '';
-    // suActionCards (Reassign/Bulk Reassign/Ban/Bulk Ban) only exists on
-    // the admin page — stays hidden entirely until a search succeeds, per
-    // "nothing below the search bar until a User ID is found".
-    if (document.getElementById('suActionCards')) document.getElementById('suActionCards').style.display = '';
+    // suActionCards (Reassign/Bulk Reassign/Ban/Bulk Ban) is always
+    // visible — Bulk Reassign and Bulk Ban/Unban act on pasted IDs
+    // independent of the search box, so they must never be hidden behind
+    // a search result. Only suDetailsCard (the result panel) toggles.
     if (document.getElementById('suAgentSelect')) document.getElementById('suAgentSelect').value = userData.user.assigned_agent || 'Unassigned';
     if (document.getElementById('suReassignUserId')) document.getElementById('suReassignUserId').value = userData.user.user_id;
     if (document.getElementById('suBanUserId')) document.getElementById('suBanUserId').value = userData.user.user_id;
@@ -244,7 +244,6 @@ async function suSearch(userId) {
     statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {
     document.getElementById('suDetailsCard').style.display = 'none';
-    if (document.getElementById('suActionCards')) document.getElementById('suActionCards').style.display = 'none';
     statusEl.textContent = 'Error: ' + e.message;
   }
 }

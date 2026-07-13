@@ -37,7 +37,7 @@ ${SEARCH_USER_SHARED_STYLES}
 
 ${SEARCH_USER_RESULT_PANEL_HTML}
 
-<div id="suActionCards" style="display:none;">
+<div id="suActionCards">
 
 <div class="su-card">
   <div class="su-card-head"><span class="su-card-icon">👤</span><span class="su-card-title">Reassign agent</span></div>
