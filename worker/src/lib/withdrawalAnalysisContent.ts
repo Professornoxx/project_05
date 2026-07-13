@@ -78,7 +78,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 <div class="wl-grid">
   <div class="wl-panel">
     <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Channel-wise Processing Time (create → review) — status 1</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Channel-wise Processing Time (create → review) — Payment processing</div>
       <button class="wl-excel-btn" id="exportWlProcTimeBtn">📥 Download Orders (Excel)</button>
     </div>
     <table class="wl-table" id="wlProcTimeTable">
@@ -89,7 +89,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel accent-green">
     <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Channel-wise Completion Time (review → complete) — status 2</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">✅</span>Channel-wise Completion Time (review → complete) — Completed</div>
       <button class="wl-excel-btn" id="exportWlCompTimeBtn">📥 Excel</button>
     </div>
     <table class="wl-table" id="wlCompTimeTable">
@@ -100,7 +100,7 @@ export const WITHDRAWAL_ANALYSIS_CONTENT_HTML = `
 
   <div class="wl-panel">
     <div class="wl-panel-head">
-      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Processing Orders — Aging</div>
+      <div class="wl-panel-title"><span class="wl-icon-badge">⏳</span>Payment Processing Orders — Aging</div>
       <button class="wl-excel-btn" id="exportWlProcAgingBtn">📥 Excel</button>
     </div>
     <div class="wl-chart" id="wlProcAgingChart"></div>
