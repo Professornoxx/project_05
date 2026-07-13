@@ -35,6 +35,10 @@ ${SEARCH_USER_SHARED_STYLES}
   <button class="su-search-btn" id="suSearchBtn">Search</button>
 </div>
 
+${SEARCH_USER_RESULT_PANEL_HTML}
+
+<div id="suActionCards" style="display:none;">
+
 <div class="su-card">
   <div class="su-card-head"><span class="su-card-icon">👤</span><span class="su-card-title">Reassign agent</span></div>
   <div class="su-row">
@@ -84,7 +88,7 @@ ${SEARCH_USER_SHARED_STYLES}
   <div class="su-bulk-result" id="suBulkBanResult"></div>
 </div>
 
-${SEARCH_USER_RESULT_PANEL_HTML}
+</div>
 
 <div id="suStatus" style="font-size:13px;color:#888;"></div>
 
