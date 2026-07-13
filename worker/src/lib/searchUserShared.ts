@@ -144,7 +144,7 @@ function suDepositBadge(status) {
 }
 function suWithdrawBadge(status) {
   const n = Number(status);
-  const map = { 0: ['IN-REVIEW', 'su-badge-review'], 1: ['PROCESSING', 'su-badge-process'], 2: ['COMPLETE', 'su-badge-complete'], 3: ['REJECTED', 'su-badge-bad'], 4: ['FAILED', 'su-badge-bad'] };
+  const map = { 0: ['UNDER REVIEW', 'su-badge-review'], 1: ['PAYMENT PROCESSING', 'su-badge-process'], 2: ['COMPLETED', 'su-badge-complete'], 3: ['REJECTED', 'su-badge-bad'], 4: ['FAILED', 'su-badge-bad'] };
   const [label, cls] = map[n] || ['—', 'su-badge-bad'];
   return '<span class="su-badge ' + cls + '">' + label + '</span>';
 }

@@ -464,8 +464,8 @@ export default {
     // processing + complete" definitions confirmed against real status
     // values in daily_records_db: deposits use 'COMPLETE'/'PROCESS'/'FAILED'
     // text; withdrawals use '0.0'..'4.0' matching 0=Under review,
-    // 1=Processing, 2=Completed, 3=Rejected, 4=Failed — so withdraw totals
-    // exclude 3 and 4 only.
+    // 1=Payment processing, 2=Completed, 3=Rejected, 4=Failed — so withdraw
+    // totals exclude 3 and 4 only.
     if (url.pathname === "/api/dashboard/home-stats" && request.method === "GET") {
       const scope = await requireDashboardOrAgentScope(request, env);
       if (scope instanceof Response) return scope;
