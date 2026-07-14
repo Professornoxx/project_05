@@ -310,18 +310,15 @@ async function wlDownloadTransactions(subset, filename, btn) {
     const res = await fetch('/api/dashboard/withdrawal-transactions?' + params.toString());
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
-    const lines = [WL_TXN_COLUMNS.map((c) => '"' + c + '"').join(',')];
-    (d.rows || []).forEach((r) => {
-      lines.push([
-        r.user_id, r.agent, 'VIP ' + r.vip_level, r.amount, r.channel, r.order_no,
-        r.hours_in_processing === null || r.hours_in_processing === undefined ? '' : r.hours_in_processing,
-      ].map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(','));
-    });
-    const blob = new Blob([lines.join('\\n')], { type: 'text/csv' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = filename;
-    a.click();
+    const aoa = [WL_TXN_COLUMNS, ...(d.rows || []).map((r) => [
+      r.user_id, r.agent, 'VIP ' + r.vip_level, r.amount, r.channel, r.order_no,
+      r.hours_in_processing === null || r.hours_in_processing === undefined ? '' : r.hours_in_processing,
+    ])];
+    const sheet = XLSX.utils.aoa_to_sheet(aoa);
+    sheet['!cols'] = [{ wch: 10 }, { wch: 16 }, { wch: 8 }, { wch: 16 }, { wch: 22 }, { wch: 26 }, { wch: 18 }];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, sheet, 'Transactions');
+    XLSX.writeFile(workbook, filename);
   } catch (e) {
     alert('Export failed: ' + e.message);
   } finally {
@@ -329,12 +326,12 @@ async function wlDownloadTransactions(subset, filename, btn) {
     btn.disabled = false;
   }
 }
-document.getElementById('exportWlProcTimeBtn').onclick = (e) => wlDownloadTransactions('processing-time', 'withdrawal-processing-time-transactions.csv', e.target);
-document.getElementById('exportWlCompTimeBtn').onclick = (e) => wlDownloadTransactions('completion-time', 'withdrawal-completion-time-transactions.csv', e.target);
-document.getElementById('exportWlRangeBtn').onclick = (e) => wlDownloadTransactions('amount-range', 'withdrawal-amount-range-transactions.csv', e.target);
-document.getElementById('exportWlProcAgingBtn').onclick = (e) => wlDownloadTransactions('processing-aging', 'processing-orders-aging-transactions.csv', e.target);
-document.getElementById('exportWlReviewAgingBtn').onclick = (e) => wlDownloadTransactions('review-aging', 'in-review-orders-aging-transactions.csv', e.target);
-document.getElementById('exportWl4dBtn').onclick = (e) => wlDownloadTransactions('completed-4day', 'completed-4h-comparison-transactions.csv', e.target);
+document.getElementById('exportWlProcTimeBtn').onclick = (e) => wlDownloadTransactions('processing-time', 'withdrawal-processing-time-transactions.xlsx', e.target);
+document.getElementById('exportWlCompTimeBtn').onclick = (e) => wlDownloadTransactions('completion-time', 'withdrawal-completion-time-transactions.xlsx', e.target);
+document.getElementById('exportWlRangeBtn').onclick = (e) => wlDownloadTransactions('amount-range', 'withdrawal-amount-range-transactions.xlsx', e.target);
+document.getElementById('exportWlProcAgingBtn').onclick = (e) => wlDownloadTransactions('processing-aging', 'processing-orders-aging-transactions.xlsx', e.target);
+document.getElementById('exportWlReviewAgingBtn').onclick = (e) => wlDownloadTransactions('review-aging', 'in-review-orders-aging-transactions.xlsx', e.target);
+document.getElementById('exportWl4dBtn').onclick = (e) => wlDownloadTransactions('completed-4day', 'completed-4h-comparison-transactions.xlsx', e.target);
 
 window.loadWithdrawalAnalysis = loadWithdrawalAnalysis;
 loadWithdrawalAnalysis();

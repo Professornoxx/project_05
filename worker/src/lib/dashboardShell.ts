@@ -69,6 +69,11 @@ export function renderDashboardShell(
 <meta charset="UTF-8" />
 <title>${pageTitle} — Dashboard</title>
 <meta name="robots" content="noindex" />
+<!-- SheetJS, for real .xlsx exports (Excel buttons across the dashboard
+     write actual workbook files via XLSX.utils.json_to_sheet +
+     XLSX.writeFile, not CSV-with-an-.xlsx-icon) — loaded once here so
+     every page's export buttons can use the same window.XLSX global. -->
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
 <script>
 // Every fetch from this page (shell script + all content-file fetches,
 // none of which know or care about this) gets an x-dashboard-mode header
