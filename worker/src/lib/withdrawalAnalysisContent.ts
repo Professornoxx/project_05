@@ -269,6 +269,8 @@ function wlRenderRangeTable(byRangeBucket, rangeTotals) {
   document.querySelector('#wlRangeTable tbody').innerHTML = body || '<tr><td colspan="7">No data</td></tr>';
 }
 
+let wlCurrentDate = null;
+
 async function loadWithdrawalAnalysis(date) {
   const statusEl = document.getElementById('wlStatus');
   statusEl.textContent = 'Loading...';
@@ -277,6 +279,7 @@ async function loadWithdrawalAnalysis(date) {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
 
+    wlCurrentDate = d.date;
     wlRenderTimeTable('#wlProcTimeTable tbody', d.channelProcessingTime);
     wlRenderTimeTable('#wlCompTimeTable tbody', d.channelCompletionTime);
     wlRenderAgingChart('#wlProcAgingChart', d.processingAging, ['3-6h','6-12h','12-24h','>24h'], '#E24B4A');
@@ -290,50 +293,48 @@ async function loadWithdrawalAnalysis(date) {
   }
 }
 
-function wlTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Every Excel button below exports transaction-level rows (one per
+// withdrawal — User ID, Agent, VIP, Withdraw Amount, Channel, Order
+// Number, Hours in Processing) via /api/dashboard/withdrawal-transactions,
+// using the exact same filter as the panel it's attached to, scoped to
+// whatever date is currently selected on the page — not just a dump of
+// the rendered summary table/chart.
+const WL_TXN_COLUMNS = ['User ID', 'Agent', 'VIP', 'Withdraw Amount', 'Channel', 'Order Number', 'Hours in Processing'];
+async function wlDownloadTransactions(subset, filename, btn) {
+  const originalText = btn.textContent;
+  btn.textContent = 'Exporting...';
+  btn.disabled = true;
+  try {
+    const params = new URLSearchParams({ subset });
+    if (wlCurrentDate) params.set('date', wlCurrentDate);
+    const res = await fetch('/api/dashboard/withdrawal-transactions?' + params.toString());
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+    const lines = [WL_TXN_COLUMNS.map((c) => '"' + c + '"').join(',')];
+    (d.rows || []).forEach((r) => {
+      lines.push([
+        r.user_id, r.agent, 'VIP ' + r.vip_level, r.amount, r.channel, r.order_no,
+        r.hours_in_processing === null || r.hours_in_processing === undefined ? '' : r.hours_in_processing,
+      ].map((v) => '"' + String(v).replace(/"/g, '""') + '"').join(','));
+    });
+    const blob = new Blob([lines.join('\\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
 }
-function wlDownloadCsv(tableEl, filename) {
-  const blob = new Blob([wlTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-}
-document.getElementById('exportWlProcTimeBtn').onclick = () => wlDownloadCsv(document.getElementById('wlProcTimeTable'), 'withdraw-processing-time.csv');
-document.getElementById('exportWlCompTimeBtn').onclick = () => wlDownloadCsv(document.getElementById('wlCompTimeTable'), 'withdraw-completion-time.csv');
-document.getElementById('exportWlRangeBtn').onclick = () => wlDownloadCsv(document.getElementById('wlRangeTable'), 'withdrawal-processing-amount-range.csv');
-
-function wlDownloadBarsCsv(containerSelector, filename) {
-  const cols = [...document.querySelectorAll(containerSelector + ' .wl-bar-col')];
-  const lines = ['"bucket","count"', ...cols.map((c) => {
-    const label = c.querySelector('.wl-bar-label').textContent;
-    const valueEl = c.querySelector('.wl-bar-value');
-    return '"' + label + '","' + (valueEl ? valueEl.textContent : '0') + '"';
-  })];
-  const blob = new Blob([lines.join('\\n')], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-}
-document.getElementById('exportWlProcAgingBtn').onclick = () => wlDownloadBarsCsv('#wlProcAgingChart', 'processing-orders-aging.csv');
-document.getElementById('exportWlReviewAgingBtn').onclick = () => wlDownloadBarsCsv('#wlReviewAgingChart', 'in-review-orders-aging.csv');
-document.getElementById('exportWl4dBtn').onclick = () => {
-  const lines = ['"date","under_4h","over_4h"', ...[...document.querySelectorAll('.wl-4day-group')].map((g) => {
-    const cols = g.querySelectorAll('.wl-4day-bar-col');
-    const date = g.querySelector('.wl-4day-date').textContent;
-    const v1 = cols[0] && cols[0].querySelector('.wl-4day-bar-value') ? cols[0].querySelector('.wl-4day-bar-value').textContent : '0';
-    const v2 = cols[1] && cols[1].querySelector('.wl-4day-bar-value') ? cols[1].querySelector('.wl-4day-bar-value').textContent : '0';
-    return '"' + date + '","' + v1 + '","' + v2 + '"';
-  })];
-  const blob = new Blob([lines.join('\\n')], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'completed-4h-comparison.csv';
-  a.click();
-};
+document.getElementById('exportWlProcTimeBtn').onclick = (e) => wlDownloadTransactions('processing-time', 'withdrawal-processing-time-transactions.csv', e.target);
+document.getElementById('exportWlCompTimeBtn').onclick = (e) => wlDownloadTransactions('completion-time', 'withdrawal-completion-time-transactions.csv', e.target);
+document.getElementById('exportWlRangeBtn').onclick = (e) => wlDownloadTransactions('amount-range', 'withdrawal-amount-range-transactions.csv', e.target);
+document.getElementById('exportWlProcAgingBtn').onclick = (e) => wlDownloadTransactions('processing-aging', 'processing-orders-aging-transactions.csv', e.target);
+document.getElementById('exportWlReviewAgingBtn').onclick = (e) => wlDownloadTransactions('review-aging', 'in-review-orders-aging-transactions.csv', e.target);
+document.getElementById('exportWl4dBtn').onclick = (e) => wlDownloadTransactions('completed-4day', 'completed-4h-comparison-transactions.csv', e.target);
 
 window.loadWithdrawalAnalysis = loadWithdrawalAnalysis;
 loadWithdrawalAnalysis();
