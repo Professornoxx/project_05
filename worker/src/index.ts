@@ -894,6 +894,75 @@ export default {
       });
     }
 
+    // Withdrawal Analysis Excel exports: transaction-level rows (one per
+    // withdrawal — User ID, Agent, VIP, Withdraw Amount, Channel, Order
+    // Number, Hours in Processing) backing each of the 6 panels above,
+    // instead of just re-serializing the rendered summary table. `subset`
+    // picks which panel's exact filter to reuse — same WHERE clauses as
+    // the aggregate queries above (same date/status/duration windows),
+    // just SELECT-ing raw columns instead of GROUP BY.
+    if (url.pathname === "/api/dashboard/withdrawal-transactions" && request.method === "GET") {
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
+
+      const date = url.searchParams.get("date") || todayIST();
+      const subset = url.searchParams.get("subset") || "processing-time";
+      const scopeClause = agentFilter ? `AND w.user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?)` : "";
+      const scopeBind = agentFilter ? [agentFilter] : [];
+      const HOURS_BETWEEN = (a: string, b: string) => `(julianday(${b}) - julianday(${a})) * 24`;
+
+      let whereClause: string;
+      let hoursExpr: string;
+      let binds: (string | null)[];
+
+      if (subset === "completion-time") {
+        whereClause = `w.date_create = ? AND CAST(w.status AS REAL) = 2 AND w.callback_time IS NOT NULL AND w.review_time IS NOT NULL`;
+        hoursExpr = HOURS_BETWEEN("w.review_time", "w.callback_time");
+        binds = [date, ...scopeBind];
+      } else if (subset === "processing-aging") {
+        whereClause = `CAST(w.status AS REAL) = 1 AND ${HOURS_BETWEEN("COALESCE(w.review_time, w.create_time)", "datetime('now')")} >= 3`;
+        hoursExpr = HOURS_BETWEEN("COALESCE(w.review_time, w.create_time)", "datetime('now')");
+        binds = [...scopeBind];
+      } else if (subset === "review-aging") {
+        whereClause = `CAST(w.status AS REAL) = 0 AND ${HOURS_BETWEEN("w.create_time", "datetime('now')")} >= 1`;
+        hoursExpr = HOURS_BETWEEN("w.create_time", "datetime('now')");
+        binds = [...scopeBind];
+      } else if (subset === "amount-range") {
+        whereClause = `CAST(w.status AS REAL) = 1 AND ${HOURS_BETWEEN("COALESCE(w.review_time, w.create_time)", "datetime('now')")} >= 3`;
+        hoursExpr = HOURS_BETWEEN("COALESCE(w.review_time, w.create_time)", "datetime('now')");
+        binds = [...scopeBind];
+      } else if (subset === "completed-4day") {
+        whereClause = `CAST(w.status AS REAL) = 2 AND w.callback_time IS NOT NULL AND date(w.create_time) BETWEEN date(?, '-6 days') AND date(?)`;
+        hoursExpr = HOURS_BETWEEN("w.create_time", "w.callback_time");
+        binds = [date, date, ...scopeBind];
+      } else {
+        // "processing-time" (default): create -> review duration.
+        whereClause = `w.date_create = ? AND w.review_time IS NOT NULL`;
+        hoursExpr = HOURS_BETWEEN("w.create_time", "w.review_time");
+        binds = [date, ...scopeBind];
+      }
+      // date_create is a computed alias substituted below since
+      // date(create_time) can't be reused across the ternary strings
+      // above without repeating the wrapping — replaced here in one place.
+      const finalWhere = whereClause.replace(/w\.date_create/g, "date(w.create_time)");
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `SELECT w.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                  ${vipLevelCase("u.total_deposit")} as vip_level,
+                  w.amount, COALESCE(w.channel, 'Unknown') as channel, w.record_key as order_no,
+                  ROUND(${hoursExpr}, 2) as hours_in_processing
+           FROM withdrawals w LEFT JOIN users u ON u.user_id = w.user_id
+           WHERE ${finalWhere} ${scopeClause}
+           ORDER BY w.create_time DESC LIMIT 5000`
+        )
+        .bind(...binds)
+        .all();
+
+      return Response.json({ date, subset, rows: rows.results });
+    }
+
     // Analytics page section 1: Region & VIP Deposit Analytics — top 10
     // regions by that day's completed deposit volume, and that same day's
     // deposit volume broken down by each depositing user's (lifetime) VIP
