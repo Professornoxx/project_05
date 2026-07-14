@@ -45,7 +45,11 @@ CREATE TABLE IF NOT EXISTS withdrawals (
   status TEXT,
   create_time TEXT,
   raw_json TEXT,
-  synced_at TEXT NOT NULL
+  synced_at TEXT NOT NULL,
+  channel TEXT,
+  review_time TEXT,
+  callback_time TEXT,
+  payment_order_id TEXT -- vendor's payment-gateway order reference (e.g. "TW..."), distinct from record_key; NULL for status-0 (under review) orders
 );
 CREATE INDEX IF NOT EXISTS idx_withdrawals_user ON withdrawals(user_id);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_create_time ON withdrawals(create_time);
