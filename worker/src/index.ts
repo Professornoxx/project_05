@@ -1564,19 +1564,25 @@ export default {
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
 
-        // Premium Active (low/high): denominator = agent's total population
-        // in that VIP bracket (current state, no activity filter);
-        // numerator = of those, who deposited anywhere in [start,end].
+        // Premium Active (low/high): denominator = agent's Action Center
+        // "Active Users" cohort for that tier — same is_banned=0 and
+        // inactive_days BETWEEN 0 AND maxDays (10 low / 15 high) definition
+        // as /api/dashboard/action-center/active-users, not just "every
+        // user in the VIP bracket" (that included dormant/banned users and
+        // made the rate look artificially tiny). Numerator = of that same
+        // active cohort, who deposited anywhere in [start,end].
         const premiumActiveTask = Promise.all(([
-          ["premiumActiveLow", 2, 4], ["premiumActiveHigh", 5, 14],
-        ] as [keyof AgentKPIs, number, number][]).map(async ([key, minLevel, maxLevel]) => {
+          ["premiumActiveLow", 2, 4, 10], ["premiumActiveHigh", 5, 14, 15],
+        ] as [keyof AgentKPIs, number, number, number][]).map(async ([key, minLevel, maxLevel, maxDays]) => {
           const cohortRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
-                 SELECT assigned_agent, ${CURRENT_LEVEL} as current_level FROM users WHERE total_deposit IS NOT NULL
-               ) WHERE current_level BETWEEN ? AND ? GROUP BY agent`
+                 SELECT assigned_agent, ${CURRENT_LEVEL} as current_level,
+                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+                 FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
+               ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ? GROUP BY agent`
             )
-            .bind(minLevel, maxLevel)
+            .bind(minLevel, maxLevel, maxDays)
             .all<{ agent: string; c: number }>();
           cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
 
@@ -1587,11 +1593,12 @@ export default {
                )
                SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, COUNT(*) as c
                FROM users u JOIN range_depositors d ON d.user_id = u.user_id
-               WHERE u.total_deposit IS NOT NULL
+               WHERE u.total_deposit IS NOT NULL AND u.last_active_time IS NOT NULL AND u.is_banned = 0
                  AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
+                 AND CAST((julianday('now') - julianday(u.last_active_time)) AS INTEGER) BETWEEN 0 AND ?
                GROUP BY agent`
             )
-            .bind(start, end, minLevel, maxLevel)
+            .bind(start, end, minLevel, maxLevel, maxDays)
             .all<{ agent: string; c: number }>();
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
