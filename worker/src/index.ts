@@ -18,6 +18,10 @@ import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
+import {
+  HOME_DEPOSIT_AMOUNT_RANGE_CARD, HOME_WITHDRAWAL_AMOUNT_RANGE_CARD, ACTION_CENTER_AMOUNT_RANGE_CARD,
+  ANALYTICS_AMOUNT_RANGE_CARD, PERFORMANCE_AMOUNT_RANGE_CARD, PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD,
+} from "./lib/amountRangeCard";
 import { renderLoginPage } from "./lib/loginPage";
 import { renderAgentLoginPage } from "./lib/agentLoginPage";
 import { isAuthed, sessionCookieHeader, clearCookieHeader, type AuthArea } from "./lib/auth";
@@ -128,15 +132,15 @@ export default {
       }
       const content =
         dashboardRoute.key === "home"
-          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_DEPOSIT_AMOUNT_RANGE_CARD + HOME_WITHDRAWAL_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + ACTION_CENTER_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML
+          ? PERFORMANCE_CONTENT_HTML + PERFORMANCE_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "platform-analysis"
-          ? PLATFORM_ANALYSIS_CONTENT_HTML
+          ? PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
@@ -423,6 +427,87 @@ export default {
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
         rows: rows.results,
       });
+    }
+
+    // Shared "Amount Range" summary card backend, reused as the last
+    // section on Home (both deposit + withdrawal), Action Center,
+    // Analytics, Performance, and Platform Analysis — one endpoint
+    // instead of one per page, since the shape (4 amount buckets, orders
+    // + total amount, Today/Yesterday) is identical everywhere; only the
+    // source table and optional cohort scope differ.
+    //   source=deposit|withdrawal — which table to bucket
+    //   scope=all (default) | vip-near-upgrade — "all" is every
+    //     COMPLETE/settled row for the date (agent-scoped as usual);
+    //     "vip-near-upgrade" additionally restricts to Action Center's
+    //     own VIP Near Upgrade cohort (its headline section), reusing
+    //     that exact bracket/gap definition rather than inventing a new
+    //     one — this is what "derive from the page's own existing data"
+    //     means for a non-listing page like Action Center.
+    //   tier=low|high — only consulted when scope=vip-near-upgrade.
+    if (url.pathname === "/api/dashboard/amount-range" && request.method === "GET") {
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
+
+      const source = url.searchParams.get("source") === "withdrawal" ? "withdrawal" : "deposit";
+      const date = url.searchParams.get("date") || todayIST();
+      const cohortScope = url.searchParams.get("scope") === "vip-near-upgrade" ? "vip-near-upgrade" : "all";
+      const tier = url.searchParams.get("tier") === "high" ? "high" : "low";
+
+      const RANGE_CASE = `CASE
+        WHEN amount < 10000 THEN '<10,000'
+        WHEN amount < 20000 THEN '10,000-19,999'
+        WHEN amount < 50000 THEN '20,000-49,999'
+        ELSE '50,000+' END`;
+      const RANGE_ORDER = ["<10,000", "10,000-19,999", "20,000-49,999", "50,000+"];
+
+      const table = source === "withdrawal" ? "withdrawals" : "deposits";
+      // Matches the same "settled" definitions used everywhere else:
+      // deposits=COMPLETE only; withdrawals=in-review+processing+complete
+      // (0,1,2), same as the Home page's own "Total Withdraw" KPI.
+      const statusClause = source === "withdrawal" ? "CAST(status AS REAL) IN (0,1,2)" : "status = 'COMPLETE'";
+
+      let cohortClause: string;
+      let cohortBind: (string | null)[];
+      if (cohortScope === "vip-near-upgrade" && source === "deposit") {
+        const CURRENT_LEVEL = vipLevelCase("total_deposit");
+        const NEXT_LEVEL_MIN = `CASE
+          WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
+          WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
+          WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
+          WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
+          WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+        const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
+        cohortClause = `AND user_id IN (
+          SELECT user_id FROM (
+            SELECT user_id, total_deposit, ${CURRENT_LEVEL} as current_level, ${NEXT_LEVEL_MIN} as next_level_min
+            FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0 AND (? IS NULL OR assigned_agent = ?)
+          ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
+            AND (next_level_min - total_deposit) BETWEEN 1 AND ?
+        )`;
+        cohortBind = [agentFilter, agentFilter, String(minLevel), String(maxLevel), String(maxGap)];
+      } else {
+        cohortClause = agentFilter ? `AND user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?)` : "";
+        cohortBind = agentFilter ? [agentFilter] : [];
+      }
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `SELECT ${RANGE_CASE} as range, COUNT(*) as totalOrders, COALESCE(SUM(amount),0) as totalAmount
+           FROM ${table} WHERE date(create_time) = ? AND ${statusClause} ${cohortClause} GROUP BY range`
+        )
+        .bind(date, ...cohortBind)
+        .all<{ range: string; totalOrders: number; totalAmount: number }>();
+
+      const byRange: Record<string, { totalOrders: number; totalAmount: number }> = {};
+      rows.results.forEach((r) => { byRange[r.range] = { totalOrders: r.totalOrders, totalAmount: r.totalAmount }; });
+      const ranges = RANGE_ORDER.map((range) => ({ range, ...(byRange[range] ?? { totalOrders: 0, totalAmount: 0 }) }));
+      const total = ranges.reduce(
+        (acc, r) => ({ totalOrders: acc.totalOrders + r.totalOrders, totalAmount: acc.totalAmount + r.totalAmount }),
+        { totalOrders: 0, totalAmount: 0 }
+      );
+
+      return Response.json({ date, source, scope: cohortScope, tier, ranges, total });
     }
 
     // Last-sync freshness indicator, shown in the shared dashboard header on
@@ -2509,13 +2594,13 @@ export default {
       }
       const content =
         agentRoute.key === "home"
-          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML
+          ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_DEPOSIT_AMOUNT_RANGE_CARD + HOME_WITHDRAWAL_AMOUNT_RANGE_CARD
           : agentRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + ACTION_CENTER_AMOUNT_RANGE_CARD
           : agentRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : agentRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML
+          ? PERFORMANCE_CONTENT_HTML + PERFORMANCE_AMOUNT_RANGE_CARD
           : agentRoute.key === "search-user"
           ? AGENT_SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
