@@ -126,7 +126,10 @@ def _pick(row: dict, candidates: list[str]):
 def _coerce(v):
     if v is None:
         return None
-    if isinstance(v, float) and pd.isna(v):
+    # pd.isna() also catches pd.NaT (a distinct singleton type, not a float
+    # or pd.Timestamp instance) which otherwise fell through to str(v) below
+    # and leaked the literal string "NaT" into D1 columns like review_time.
+    if isinstance(v, (float, pd.Timestamp, type(pd.NaT))) and pd.isna(v):
         return None
     if isinstance(v, pd.Timestamp) or isinstance(v, datetime):
         return v.isoformat()
