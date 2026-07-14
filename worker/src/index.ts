@@ -1479,11 +1479,6 @@ export default {
           return agents[agent];
         };
 
-        // Number of calendar days in [start,end] inclusive — used to scale
-        // the fixed daily targets below ("30 per day" over a 7-day range
-        // means a 210 target, not literally 30).
-        const days = Math.round((new Date(end + "T00:00:00Z").getTime() - new Date(start + "T00:00:00Z").getTime()) / 86400000) + 1;
-
         // The 4 blocks below (reactivation, VIP upgrade, premium active,
         // retention) are fully independent of each other — different KPI
         // keys, no shared intermediate state — so they run concurrently via
@@ -1492,9 +1487,15 @@ export default {
         // being slow: it was ~70-80 sequential D1 round-trips per load
         // before (worse on 30/35-day ranges, where retention alone used to
         // loop once per calendar day).
+        //
+        // Every KPI's denominator is the agent's live Action Center cohort
+        // size (same cohort definitions as Action Center/Analytics), never
+        // a hardcoded quota — num/den is the actual conversion rate for
+        // that cohort, so "Achievement %" is always real progress against
+        // the real opportunity, not a fixed target.
         const reactivationTask = Promise.all(([
-          ["reactivationLow", 2, 4, 10, 180, 30], ["reactivationHigh", 5, 14, 15, 240, 10],
-        ] as [keyof AgentKPIs, number, number, number, number, number][]).map(async ([key, minLevel, maxLevel, minDays, maxDays, target]) => {
+          ["reactivationLow", 2, 4, 10, 180], ["reactivationHigh", 5, 14, 15, 240],
+        ] as [keyof AgentKPIs, number, number, number, number][]).map(async ([key, minLevel, maxLevel, minDays, maxDays]) => {
           const denRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1505,7 +1506,7 @@ export default {
             )
             .bind(minLevel, maxLevel, minDays, maxDays)
             .all<{ agent: string; c: number }>();
-          denRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
+          denRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
 
           const numRows = await env.daily_records_db
             .prepare(
@@ -1524,13 +1525,12 @@ export default {
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
 
-        // VIP Upgrade (low/high): fixed daily target (10/5), scaled by days
-        // in range — NOT a ratio against near-upgrade cohort size. Same
-        // "cohort presence decides no-users-assigned, target decides the
-        // displayed denominator" split as Reactivation above.
+        // VIP Upgrade (low/high): denominator = agent's live near-upgrade
+        // cohort size (same definition as Action Center's VIP Near Upgrade
+        // list), not a fixed daily quota.
         const vipUpgradeTask = Promise.all(([
-          ["vipUpgradeLow", 2, 4, 1000, 10], ["vipUpgradeHigh", 5, 13, 50000, 5],
-        ] as [keyof AgentKPIs, number, number, number, number][]).map(async ([key, minLevel, maxLevel, maxGap, target]) => {
+          ["vipUpgradeLow", 2, 4, 1000], ["vipUpgradeHigh", 5, 13, 50000],
+        ] as [keyof AgentKPIs, number, number, number][]).map(async ([key, minLevel, maxLevel, maxGap]) => {
           const cohortRows = await env.daily_records_db
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
@@ -1541,7 +1541,7 @@ export default {
             )
             .bind(minLevel, maxLevel, maxGap)
             .all<{ agent: string; c: number }>();
-          cohortRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
+          cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
 
           const numRows = await env.daily_records_db
             .prepare(
