@@ -20,7 +20,7 @@ import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import {
   HOME_AMOUNT_RANGE_CARDS, ACTION_CENTER_AMOUNT_RANGE_CARD,
-  ANALYTICS_AMOUNT_RANGE_CARD, PERFORMANCE_AMOUNT_RANGE_CARD, PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD,
+  ANALYTICS_AMOUNT_RANGE_CARD, PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD,
 } from "./lib/amountRangeCard";
 import { renderLoginPage } from "./lib/loginPage";
 import { renderAgentLoginPage } from "./lib/agentLoginPage";
@@ -138,7 +138,7 @@ export default {
           : dashboardRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML + PERFORMANCE_AMOUNT_RANGE_CARD
+          ? PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
           ? PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "search-user"
@@ -2600,7 +2600,7 @@ export default {
           : agentRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : agentRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML + PERFORMANCE_AMOUNT_RANGE_CARD
+          ? PERFORMANCE_CONTENT_HTML
           : agentRoute.key === "search-user"
           ? AGENT_SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
