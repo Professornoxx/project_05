@@ -947,11 +947,17 @@ export default {
       // above without repeating the wrapping — replaced here in one place.
       const finalWhere = whereClause.replace(/w\.date_create/g, "date(w.create_time)");
 
+      // payment_order_id is the vendor's payment-gateway order reference
+      // (e.g. "TW..."); it's only assigned once an order reaches the
+      // payment center, so status-0 (still under review) orders never have
+      // one — review-aging has no substitute field and returns null.
+      const orderNoExpr = subset === "review-aging" ? "NULL" : "w.payment_order_id";
+
       const rows = await env.daily_records_db
         .prepare(
           `SELECT w.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
                   ${vipLevelCase("u.total_deposit")} as vip_level,
-                  w.amount, COALESCE(w.channel, 'Unknown') as channel, w.record_key as order_no,
+                  w.amount, COALESCE(w.channel, 'Unknown') as channel, ${orderNoExpr} as order_no,
                   ROUND(${hoursExpr}, 2) as hours_in_processing
            FROM withdrawals w LEFT JOIN users u ON u.user_id = w.user_id
            WHERE ${finalWhere} ${scopeClause}

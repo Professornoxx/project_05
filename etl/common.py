@@ -56,6 +56,16 @@ RESULT_TIME_FIELD_CANDIDATES = ["resultDate", "result_time", "updateTime", "upda
 # aging panels.
 REVIEW_TIME_FIELD_CANDIDATES = ["reviewTime", "review_time"]
 CALLBACK_TIME_FIELD_CANDIDATES = ["callbackTime", "callback_time"]
+# withdraw-only: "Payment Center Order ID" (e.g. "TW06-05-1261149344927092737")
+# is the vendor's own payment-gateway order reference, distinct from our
+# own record_key (orderNo, "RUZC..." format) — confirmed present in real
+# withdraw export data, used by the Withdrawal Analysis Excel exports.
+# Only populated once an order reaches the payment center (status >= 1);
+# still-under-review (status 0) orders have no such ID assigned yet by the
+# vendor — there is no substitute field for that status, confirmed by
+# inspecting real export data (every payment/channel order ID column is
+# blank for status-0 rows).
+PAYMENT_ORDER_ID_FIELD_CANDIDATES = ["Payment Center Order ID", "payCenterOrderNo"]
 # deposit-only: "是否是首充，0不是首充，1是首充" (is-first-deposit, 0=no/1=yes) and
 # "RegisterCity" (the user's registered city) — both confirmed present in
 # real deposit export headers, used by Action Center's "New Users & Bonuses"
@@ -158,6 +168,7 @@ def extract_common_fields(row: dict) -> dict:
         "region": _coerce(_pick(row, REGION_FIELD_CANDIDATES)),
         "game_name": _coerce(_pick(row, GAME_NAME_FIELD_CANDIDATES)),
         "source_name": _coerce(_pick(row, SOURCE_FIELD_CANDIDATES)),
+        "payment_order_id": _coerce(_pick(row, PAYMENT_ORDER_ID_FIELD_CANDIDATES)),
     }
 
 

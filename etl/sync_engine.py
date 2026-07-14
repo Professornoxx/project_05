@@ -40,7 +40,7 @@ PACKAGE_ID = os.environ.get("PACKAGE_ID", "10")
 # clause like this).
 CHUNK_SIZE = 12  # 8 params/row (wallet_details, now incl. game_name + source_name): 12*8=96, under the ~100 ceiling
 DEPOSIT_CHUNK_SIZE = 9  # deposits has 5 extra columns (channel, marketing_channel, result_time, is_first_deposit, region): 9*11=99, under the ~100 ceiling
-WITHDRAW_CHUNK_SIZE = 11  # withdrawals has 3 extra columns (channel, review_time, callback_time): 11*9=99, same ceiling
+WITHDRAW_CHUNK_SIZE = 10  # withdrawals has 4 extra columns (channel, review_time, callback_time, payment_order_id): 10*10=100, at the ceiling
 REQUEST_TIMEOUT_SECONDS = 120  # generous — no Workers-style CPU clock to protect here
 
 TABLE_BY_SOURCE = {"deposit": "deposits", "withdraw": "withdrawals", "wallet": "wallet_details"}
@@ -126,10 +126,11 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                     fields["is_first_deposit"], fields["region"], now,
                 ])
             elif is_withdraw:
-                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 params.extend([
                     key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
-                    fields["channel"], fields["review_time"], fields["callback_time"], now,
+                    fields["channel"], fields["review_time"], fields["callback_time"],
+                    fields["payment_order_id"], now,
                 ])
             else:
                 values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?)")
@@ -156,12 +157,13 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
             )
         elif is_withdraw:
             sql = (
-                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, review_time, callback_time, synced_at) "
+                f"INSERT INTO {table} (record_key, user_id, amount, status, create_time, channel, review_time, callback_time, payment_order_id, synced_at) "
                 f"VALUES {','.join(values_sql)} "
                 "ON CONFLICT(record_key) DO UPDATE SET "
                 "user_id = excluded.user_id, amount = excluded.amount, status = excluded.status, "
                 "create_time = excluded.create_time, channel = excluded.channel, "
-                "review_time = excluded.review_time, callback_time = excluded.callback_time, synced_at = excluded.synced_at"
+                "review_time = excluded.review_time, callback_time = excluded.callback_time, "
+                "payment_order_id = excluded.payment_order_id, synced_at = excluded.synced_at"
             )
         else:
             sql = (
