@@ -14,9 +14,14 @@ export const DEPOSIT_ANALYSIS_CONTENT_HTML = `
   table.da-table th { text-align: left; padding: 8px 12px; background: #fafafa; color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
   table.da-table td { padding: 8px 12px; border-top: 1px solid #f0f0f0; }
   table.da-table th.num, table.da-table td.num { text-align: right; }
-  .bar-cell { position: relative; }
-  .bar-fill { position: absolute; top: 0; bottom: 0; left: 0; background: #dbeafe; z-index: 0; }
-  .bar-cell span { position: relative; z-index: 1; }
+  /* Bar-chart-in-cell effect via a background gradient on the <td>
+     itself instead of an absolutely-positioned child span — position:
+     absolute with top:0/bottom:0 inside a table cell doesn't reliably
+     fill the cell's actual rendered height across browsers/table
+     layout algorithms (confirmed live: the bar was invisible in
+     practice despite the CSS/markup looking correct). A gradient
+     background has no such dependency. */
+  .bar-cell { background-repeat: no-repeat; }
   .success-good { color: #15803d; font-weight: 700; }
   .success-mid { color: #b45309; font-weight: 700; }
   .success-bad { color: #dc2626; font-weight: 700; }
@@ -73,6 +78,9 @@ function fmtInr(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { max
 function fmtNum(n) { return Number(n || 0).toLocaleString('en-IN'); }
 function fmtMin(n) { return n === null || n === undefined ? '—' : Number(n).toFixed(1) + ' min'; }
 function successClass(pct) { return pct >= 45 ? 'success-good' : pct >= 20 ? 'success-mid' : 'success-bad'; }
+function barCell(pct, text) {
+  return '<td class="num bar-cell" style="background: linear-gradient(to right, #dbeafe ' + pct + '%, transparent ' + pct + '%);">' + text + '</td>';
+}
 
 function byRangeOrder(rows) {
   const map = {};
@@ -93,7 +101,7 @@ async function loadDepositAnalysis(date) {
     document.querySelector('#amountRangeTable tbody').innerHTML = amountRows.map((r) => {
       const pct = (Number(r.total || 0) / maxTotal) * 100;
       return '<tr><td>' + r.range + '</td><td class="num">' + fmtNum(r.count) + '</td><td class="num">' + fmtNum(r.users) +
-        '</td><td class="num bar-cell"><span class="bar-fill" style="width:' + pct + '%"></span><span>' + fmtInr(r.total) + '</span></td></tr>';
+        '</td>' + barCell(pct, fmtInr(r.total)) + '</tr>';
     }).join('');
 
     const successRows = byRangeOrder(d.successByRange).map((r) => ({ ...r, total: r.total || 0, completed: r.completed || 0 }));
@@ -101,7 +109,7 @@ async function loadDepositAnalysis(date) {
     document.querySelector('#successRangeTable tbody').innerHTML = successRows.map((r) => {
       const pct = r.total > 0 ? (r.completed / r.total * 100) : 0;
       const barPct = (Number(r.total || 0) / maxSuccessTotal) * 100;
-      return '<tr><td>' + r.range + '</td><td class="num bar-cell"><span class="bar-fill" style="width:' + barPct + '%"></span><span>' + fmtNum(r.total) + '</span></td><td class="num">' + fmtNum(r.completed) +
+      return '<tr><td>' + r.range + '</td>' + barCell(barPct, fmtNum(r.total)) + '<td class="num">' + fmtNum(r.completed) +
         '</td><td class="num ' + successClass(pct) + '">' + pct.toFixed(1) + '%</td><td class="num">' + fmtMin(r.avg_minutes) + '</td></tr>';
     }).join('') || '<tr><td colspan="5">No data</td></tr>';
 
@@ -111,7 +119,7 @@ async function loadDepositAnalysis(date) {
       const pct = r.total_orders > 0 ? (r.comp_orders / r.total_orders * 100) : 0;
       const barPct = (Number(r.comp_amount || 0) / maxChannelAmount) * 100;
       return '<tr><td>' + r.channel + '</td><td class="num">' + fmtNum(r.total_orders) + '</td><td class="num">' + fmtNum(r.comp_orders) +
-        '</td><td class="num">' + fmtNum(r.comp_users) + '</td><td class="num bar-cell"><span class="bar-fill" style="width:' + barPct + '%"></span><span>' + fmtInr(r.comp_amount) + '</span></td>' +
+        '</td><td class="num">' + fmtNum(r.comp_users) + '</td>' + barCell(barPct, fmtInr(r.comp_amount)) +
         '<td class="num ' + successClass(pct) + '">' + pct.toFixed(1) + '%</td><td class="num">' + fmtMin(r.avg_mins) + '</td></tr>';
     }).join('') || '<tr><td colspan="7">No data</td></tr>';
 
