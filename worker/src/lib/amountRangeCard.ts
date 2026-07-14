@@ -28,6 +28,13 @@ export const AMOUNT_RANGE_CARD_STYLES = `
   table.ar-table tr:hover td { background: #fafbfc; }
   table.ar-table tr.ar-total-row td { font-weight: 700; color: #1f2430; border-top: 2px solid #e5e7eb; }
   .ar-status { font-size: 12.5px; color: #9ca3af; margin-top: 6px; }
+  /* Home's two cards (Deposit + Withdrawal Amount Range) sit side by
+     side on desktop instead of stacking — equal width via the grid's
+     1fr columns, equal height via align-items:stretch + the card
+     flexing to fill it. Collapses to one column on tablet/mobile. */
+  .ar-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: stretch; }
+  .ar-grid .ar-card { margin-bottom: 0; height: 100%; display: flex; flex-direction: column; }
+  @media (max-width: 900px) { .ar-grid { grid-template-columns: 1fr; } }
 </style>
 `;
 
@@ -143,12 +150,14 @@ export function renderAmountRangeCard(opts: {
 // (matches the existing per-content-file <style> convention used
 // throughout this codebase) so each card constant is a fully
 // self-contained drop-in appended as that page's last section.
-export const HOME_DEPOSIT_AMOUNT_RANGE_CARD = AMOUNT_RANGE_CARD_STYLES + renderAmountRangeCard({
-  instanceId: "arHomeDeposit", title: "Deposit Amount Range", icon: "💰", source: "deposit",
-});
-export const HOME_WITHDRAWAL_AMOUNT_RANGE_CARD = renderAmountRangeCard({
-  instanceId: "arHomeWithdrawal", title: "Withdrawal Amount Range", icon: "🏦", source: "withdrawal",
-});
+//
+// Home's two cards are combined into one .ar-grid-wrapped constant so
+// Deposit/Withdrawal Amount Range render side by side (desktop) or
+// stacked (mobile) as a single unit, instead of two independent cards.
+export const HOME_AMOUNT_RANGE_CARDS = AMOUNT_RANGE_CARD_STYLES + '<div class="ar-grid">' +
+  renderAmountRangeCard({ instanceId: "arHomeDeposit", title: "Deposit Amount Range", icon: "💰", source: "deposit" }) +
+  renderAmountRangeCard({ instanceId: "arHomeWithdrawal", title: "Withdrawal Amount Range", icon: "🏦", source: "withdrawal" }) +
+  '</div>';
 export const ACTION_CENTER_AMOUNT_RANGE_CARD = AMOUNT_RANGE_CARD_STYLES + renderAmountRangeCard({
   instanceId: "arActionCenter", title: "Deposit Amount Range — VIP Near Upgrade", icon: "💰", source: "deposit",
   cohortScope: "vip-near-upgrade", showTierTabs: true,
