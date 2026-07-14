@@ -1169,7 +1169,14 @@ export default {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
       const anchorDate = url.searchParams.get("date") || todayIST();
-      const [minLevel, maxLevel] = tier === "low" ? [2, 4] : [5, 14];
+      // Cohort deliberately matches Action Center's Active Users exactly
+      // (same VIP bracket + inactive_days<=maxDays window, same [10,15]
+      // day caps per tier) — "Premium Active" used to mean "everyone
+      // currently in this VIP bracket" with no activity requirement,
+      // which diverged from Action Center's cohort of the same name.
+      // Analytics is meant to be built from Action Center's own cohorts,
+      // so this now reuses that exact definition.
+      const [minLevel, maxLevel, maxDays] = tier === "low" ? [2, 4, 10] : [5, 14, 15];
 
       const CURRENT_LEVEL = `CASE
         WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
@@ -1179,18 +1186,19 @@ export default {
         WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
 
       const CTE = `WITH cohort AS (
-          SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level
-          FROM users WHERE total_deposit IS NOT NULL AND is_banned = 0
+          SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
+                 CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+          FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
             AND (? IS NULL OR assigned_agent = ?)
         ),
         cohort_filtered AS (
-          SELECT * FROM cohort WHERE current_level BETWEEN ? AND ?
+          SELECT * FROM cohort WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?
         ),
         today_dep AS (
           SELECT user_id, SUM(amount) as day_deposit, COUNT(*) as deposit_count
           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
         )`;
-      const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, anchorDate];
+      const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, maxDays, anchorDate];
 
       const cohortCountRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
