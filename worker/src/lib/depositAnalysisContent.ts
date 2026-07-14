@@ -105,21 +105,17 @@ async function loadDepositAnalysis(date) {
     }).join('');
 
     const successRows = byRangeOrder(d.successByRange).map((r) => ({ ...r, total: r.total || 0, completed: r.completed || 0 }));
-    const maxSuccessTotal = Math.max(...successRows.map((r) => Number(r.total || 0)), 1);
     document.querySelector('#successRangeTable tbody').innerHTML = successRows.map((r) => {
       const pct = r.total > 0 ? (r.completed / r.total * 100) : 0;
-      const barPct = (Number(r.total || 0) / maxSuccessTotal) * 100;
-      return '<tr><td>' + r.range + '</td>' + barCell(barPct, fmtNum(r.total)) + '<td class="num">' + fmtNum(r.completed) +
+      return '<tr><td>' + r.range + '</td><td class="num">' + fmtNum(r.total) + '</td><td class="num">' + fmtNum(r.completed) +
         '</td><td class="num ' + successClass(pct) + '">' + pct.toFixed(1) + '%</td><td class="num">' + fmtMin(r.avg_minutes) + '</td></tr>';
     }).join('') || '<tr><td colspan="5">No data</td></tr>';
 
     const channelRows = d.byChannel || [];
-    const maxChannelAmount = Math.max(...channelRows.map((r) => Number(r.comp_amount || 0)), 1);
     document.querySelector('#channelTable tbody').innerHTML = channelRows.map((r) => {
       const pct = r.total_orders > 0 ? (r.comp_orders / r.total_orders * 100) : 0;
-      const barPct = (Number(r.comp_amount || 0) / maxChannelAmount) * 100;
       return '<tr><td>' + r.channel + '</td><td class="num">' + fmtNum(r.total_orders) + '</td><td class="num">' + fmtNum(r.comp_orders) +
-        '</td><td class="num">' + fmtNum(r.comp_users) + '</td>' + barCell(barPct, fmtInr(r.comp_amount)) +
+        '</td><td class="num">' + fmtNum(r.comp_users) + '</td><td class="num">' + fmtInr(r.comp_amount) + '</td>' +
         '<td class="num ' + successClass(pct) + '">' + pct.toFixed(1) + '%</td><td class="num">' + fmtMin(r.avg_mins) + '</td></tr>';
     }).join('') || '<tr><td colspan="7">No data</td></tr>';
 
