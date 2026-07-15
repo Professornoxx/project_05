@@ -2229,12 +2229,22 @@ export default {
       // same "not found" response as searching a nonexistent one.
       const user = await env.daily_records_db
         .prepare(
+          // deposit_count is NOT computed here — u.* already carries
+          // users.deposit_count, the true lifetime figure synced from the
+          // master sheet. It used to be shadowed by a
+          // COUNT(*) FROM deposits subquery (rolling ~35-day window, not
+          // lifetime) mislabeled "deposit_txn_count" and shown under the
+          // page's "LIFETIME" section — confirmed live: showed 6 for a user
+          // whose true lifetime deposit_count was 7, because their oldest
+          // deposit had already aged out of the deposits table's retention
+          // window. withdrawal_txn_count has no lifetime equivalent column
+          // (schema has deposit_count but no withdrawal_count), so it's
+          // still a live rolling-window count — that one's expected.
           `SELECT u.*, ${vipLevelCase("u.total_deposit")} as vip_level,
                   (SELECT COALESCE(SUM(amount),0) FROM deposits WHERE user_id = u.user_id AND date(create_time) = ? AND status = 'COMPLETE') as dep_today,
                   (SELECT COALESCE(SUM(amount),0) FROM withdrawals WHERE user_id = u.user_id AND date(create_time) = ? AND CAST(status AS REAL) = 2) as wd_today,
                   (SELECT MAX(create_time) FROM deposits WHERE user_id = u.user_id AND status = 'COMPLETE') as last_deposit_time,
                   (SELECT MAX(create_time) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as last_withdrawal_time,
-                  (SELECT COUNT(*) FROM deposits WHERE user_id = u.user_id AND status = 'COMPLETE') as deposit_txn_count,
                   (SELECT COUNT(*) FROM withdrawals WHERE user_id = u.user_id AND CAST(status AS REAL) = 2) as withdrawal_txn_count
            FROM users u WHERE u.user_id = ? AND (? IS NULL OR u.assigned_agent = ?)`
         )

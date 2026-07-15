@@ -95,28 +95,96 @@ def fetch_export_rows(source: str, begin_time: str, end_time: str) -> list[dict]
     return common.parse_excel_rows(content)
 
 
-def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
-    """Returns (rows_written, touched_user_ids). deposits gets 2 extra
-    columns (channel, result_time) for the Deposit Analysis dashboard
-    section; withdrawals gets 3 extra columns (channel, review_time,
-    callback_time) for the Withdraw Analysis section; wallet_details gets
-    2 extra columns (game_name, source_name) for the Platform Analysis
-    Bonus Claim Report."""
+def _is_complete(table: str, status) -> bool:
+    """Deposit/withdrawal 'settled' definitions, matching the dashboard's own
+    convention (see index.ts's home-stats/deposit-analysis comments):
+    deposits use the text status 'COMPLETE'; withdrawals use numeric status
+    2 (0=review, 1=processing, 2=complete, 3=rejected, 4=failed)."""
+    if table == "deposits":
+        return status == "COMPLETE"
+    if table == "withdrawals":
+        try:
+            return float(status) == 2
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def upsert_rows(table: str, rows: list[dict]) -> tuple[int, dict[int, dict]]:
+    """Returns (rows_written, per_user_deltas). per_user_deltas maps
+    user_id -> {"amount": delta, "count": delta}: the NET change in settled
+    (COMPLETE / status=2) amount this batch causes for that user, to be
+    ADDED to their existing users.total_deposit/total_withdrawal — not a
+    replacement value. Computed by comparing each row's new status against
+    whatever that same record_key's status was before this upsert:
+      - brand-new record_key, already settled  -> +amount (genuinely new)
+      - existing record_key, was NOT settled, now settled -> +amount
+        (e.g. PROCESS -> COMPLETE transition)
+      - existing record_key, was settled, still settled -> no change
+        (prevents double-counting a row synced more than once)
+      - existing record_key, was settled, no longer settled -> -amount
+        (a rare reversal)
+      - neither old nor new status is settled -> no change
+    This replaces the previous approach of recomputing
+    SUM(amount) FROM {table} for touched users, which silently shrank
+    lifetime totals every sync because daily_records_db only retains a
+    rolling ~35-day window, not full history (see update_master_aggregates).
+    deposits gets 2 extra columns (channel, result_time) for the Deposit
+    Analysis dashboard section; withdrawals gets 3 extra columns (channel,
+    review_time, callback_time) for the Withdraw Analysis section;
+    wallet_details gets 2 extra columns (game_name, source_name) for the
+    Platform Analysis Bonus Claim Report."""
     if not rows:
-        return 0, []
+        return 0, {}
 
     is_deposit = table == "deposits"
     is_withdraw = table == "withdrawals"
+    tracks_lifetime_total = is_deposit or is_withdraw
     chunk_size = DEPOSIT_CHUNK_SIZE if is_deposit else WITHDRAW_CHUNK_SIZE if is_withdraw else CHUNK_SIZE
     now = datetime.now(timezone.utc).isoformat()
-    touched_user_ids = []
+    deltas: dict[int, dict] = {}
+
+    def add_delta(user_id, amount: float, count: int) -> None:
+        if user_id is None:
+            return
+        d = deltas.setdefault(user_id, {"amount": 0.0, "count": 0})
+        d["amount"] += amount
+        d["count"] += count
+
+    def as_user_id(v):
+        if v is None:
+            return None
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+
+    def as_amount(v) -> float:
+        try:
+            return float(v) if v is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
 
     for i in range(0, len(rows), chunk_size):
         chunk = rows[i : i + chunk_size]
+        chunk_keys = [common.record_key(row) for row in chunk]
+
+        # Snapshot each record_key's PRIOR status/amount before this batch's
+        # INSERT ... ON CONFLICT overwrites it — this is what lets us tell
+        # "newly settled" apart from "already settled, re-synced again".
+        prior_by_key = {}
+        if tracks_lifetime_total:
+            placeholders = ",".join("?" for _ in chunk_keys)
+            existing = cf_client.d1_query(
+                DAILY_DB_ID,
+                f"SELECT record_key, user_id, amount, status FROM {table} WHERE record_key IN ({placeholders})",
+                chunk_keys,
+            )
+            prior_by_key = {r["record_key"]: r for r in existing}
+
         values_sql = []
         params = []
-        for row in chunk:
-            key = common.record_key(row)
+        for row, key in zip(chunk, chunk_keys):
             fields = common.extract_common_fields(row)
             if is_deposit:
                 values_sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
@@ -138,11 +206,23 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
                     key, fields["user_id"], fields["amount"], fields["status"], fields["create_time"],
                     fields["game_name"], fields["source_name"], now,
                 ])
-            if fields["user_id"] is not None:
-                try:
-                    touched_user_ids.append(int(float(fields["user_id"])))
-                except (ValueError, TypeError):
-                    pass
+            if tracks_lifetime_total:
+                new_user_id = as_user_id(fields["user_id"])
+                new_amount = as_amount(fields["amount"])
+                new_complete = _is_complete(table, fields["status"])
+                prior = prior_by_key.get(key)
+                if prior is None:
+                    if new_complete:
+                        add_delta(new_user_id, new_amount, 1)
+                else:
+                    old_complete = _is_complete(table, prior["status"])
+                    if new_complete and not old_complete:
+                        add_delta(new_user_id, new_amount, 1)
+                    elif old_complete and not new_complete:
+                        add_delta(as_user_id(prior["user_id"]), -as_amount(prior["amount"]), -1)
+                    # old_complete == new_complete (both settled, or both
+                    # not): no change — this is what prevents a row synced
+                    # more than once from being double-counted.
 
         if is_deposit:
             sql = (
@@ -176,45 +256,44 @@ def upsert_rows(table: str, rows: list[dict]) -> tuple[int, list[int]]:
             )
         cf_client.d1_query(DAILY_DB_ID, sql, params)
 
-    return len(rows), touched_user_ids
+    return len(rows), deltas
 
 
-def update_master_aggregates(table: str, user_ids: list[int]) -> int:
-    """Mirrors aggregate.ts: after Daily Records DB is updated, refresh the
-    touched users' summary columns in the Master DB. Only deposit/withdraw
-    map to a Master DB column; wallet_details has none yet."""
-    unique_ids = list({uid for uid in user_ids if uid is not None})
-    if not unique_ids:
-        return 0
-
+def update_master_aggregates(table: str, deltas: dict[int, dict]) -> int:
+    """Applies each touched user's net settled-amount change from this sync
+    batch (see upsert_rows) as an INCREMENT to their existing lifetime
+    users.total_deposit/total_withdrawal — never a wholesale replace.
+    Previously this recomputed SUM(amount) FROM {table} for touched users
+    and overwrote the column with that sum outright; since daily_records_db
+    only retains a rolling ~35-day window (not full history), that silently
+    shrank real lifetime totals a little more on every sync a user appeared
+    in — confirmed live: a user with true lifetime total_deposit ~188,700
+    (per a July-5 master-sheet export) had eroded to 92,000 in the live DB
+    purely from this recompute running on their later deposits. Only
+    deposit/withdraw map to a Master DB column; wallet_details has none yet
+    and never reaches this function (see sync_source)."""
     column = "total_deposit" if table == "deposits" else "total_withdrawal"
     count_column = "deposit_count" if table == "deposits" else None
+    now = datetime.now(timezone.utc).isoformat()
 
     updated = 0
-    for i in range(0, len(unique_ids), 100):
-        chunk = unique_ids[i : i + 100]
-        placeholders = ",".join("?" for _ in chunk)
-        sums = cf_client.d1_query(
-            DAILY_DB_ID,
-            f"SELECT user_id, SUM(amount) as total, COUNT(*) as cnt FROM {table} "
-            f"WHERE user_id IN ({placeholders}) GROUP BY user_id",
-            chunk,
-        )
-        for row in sums:
-            now = datetime.now(timezone.utc).isoformat()
-            if count_column:
-                cf_client.d1_query(
-                    DAILY_DB_ID,
-                    f"UPDATE users SET {column} = ?, {count_column} = ?, update_time = ? WHERE user_id = ?",
-                    [row["total"], row["cnt"], now, row["user_id"]],
-                )
-            else:
-                cf_client.d1_query(
-                    DAILY_DB_ID,
-                    f"UPDATE users SET {column} = ?, update_time = ? WHERE user_id = ?",
-                    [row["total"], now, row["user_id"]],
-                )
-            updated += 1
+    for user_id, delta in deltas.items():
+        if delta["amount"] == 0 and delta["count"] == 0:
+            continue
+        if count_column:
+            cf_client.d1_query(
+                DAILY_DB_ID,
+                f"UPDATE users SET {column} = COALESCE({column}, 0) + ?, "
+                f"{count_column} = COALESCE({count_column}, 0) + ?, update_time = ? WHERE user_id = ?",
+                [delta["amount"], delta["count"], now, user_id],
+            )
+        else:
+            cf_client.d1_query(
+                DAILY_DB_ID,
+                f"UPDATE users SET {column} = COALESCE({column}, 0) + ?, update_time = ? WHERE user_id = ?",
+                [delta["amount"], now, user_id],
+            )
+        updated += 1
     return updated
 
 
@@ -318,10 +397,10 @@ def sync_source(source: str, begin_time: str, end_time: str) -> None:
     try:
         rows = fetch_export_rows(source, begin_time, end_time)
         print(f"[{source}] fetched {len(rows)} rows")
-        written, user_ids = upsert_rows(table, rows)
+        written, deltas = upsert_rows(table, rows)
 
         if source in ("deposit", "withdraw"):
-            updated = update_master_aggregates(table, user_ids)
+            updated = update_master_aggregates(table, deltas)
             print(f"[{source}] updated Master DB aggregates for {updated} users")
 
         profile_updates = collect_profile_updates(rows, source)

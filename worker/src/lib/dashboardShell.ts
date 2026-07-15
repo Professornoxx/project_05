@@ -276,7 +276,13 @@ document.getElementById('logoutLink').onclick = async (e) => {
 
     const bySource = {};
     (d.bySource || []).forEach((r) => { bySource[r.source] = r.last_success; });
-    const timestamps = Object.values(bySource).filter(Boolean).map((t) => new Date(t).getTime());
+    // manual_upload only runs when someone manually uploads a master sheet,
+    // not on the hourly cron — it always looks "stale" between uploads by
+    // design, so it's excluded here to avoid flagging the whole banner red
+    // over a source that isn't supposed to run continuously.
+    const timestamps = Object.entries(bySource)
+      .filter(([source, t]) => source !== 'manual_upload' && Boolean(t))
+      .map(([, t]) => new Date(t).getTime());
     if (timestamps.length === 0) {
       badge.textContent = 'No successful sync yet';
       badge.className = 'last-sync stale';
