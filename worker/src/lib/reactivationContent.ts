@@ -151,19 +151,47 @@ document.getElementById('rxLowNext').onclick = () => { rxState.low.page++; rxLoa
 document.getElementById('rxHighPrev').onclick = () => { if (rxState.high.page > 1) { rxState.high.page--; rxLoadTier('high'); } };
 document.getElementById('rxHighNext').onclick = () => { rxState.high.page++; rxLoadTier('high'); };
 
-function rxTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows — this fetches every page from the same API the
+// table itself uses and builds the CSV from that combined JSON instead.
+const RX_EXPORT_HEADER = ['User ID', 'Agent', 'Current VIP Level', 'Inactive Days', 'Today Deposit'];
+function rxCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+async function rxFetchAllRows(tier) {
+  const first = await fetch('/api/dashboard/analytics/reactivation?tier=' + tier + '&page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch('/api/dashboard/analytics/reactivation?tier=' + tier + '&page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-function rxDownloadCsv(tableEl, filename) {
-  const blob = new Blob([rxTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+function rxRowsToCsv(rows) {
+  const lines = [RX_EXPORT_HEADER.map(rxCsvField).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.user_id, r.agent, r.current_level, r.inactive_days, r.day_deposit].map(rxCsvField).join(','));
+  });
+  return lines.join('\\n');
 }
-document.getElementById('exportRxLowBtn').onclick = () => rxDownloadCsv(document.getElementById('rxLowTable'), 'reactivation-low.csv');
-document.getElementById('exportRxHighBtn').onclick = () => rxDownloadCsv(document.getElementById('rxHighTable'), 'reactivation-high.csv');
+async function rxExportTier(tier, filename, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await rxFetchAllRows(tier);
+    const blob = new Blob([rxRowsToCsv(rows)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+document.getElementById('exportRxLowBtn').onclick = (e) => rxExportTier('low', 'reactivation-low.csv', e.currentTarget);
+document.getElementById('exportRxHighBtn').onclick = (e) => rxExportTier('high', 'reactivation-high.csv', e.currentTarget);
 
 // Exposed so the Analytics page's 7-day tab picker (loaded before this
 // script) can re-trigger this section when the selected date changes.

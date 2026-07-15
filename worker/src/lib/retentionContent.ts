@@ -200,20 +200,56 @@ document.getElementById('rtLowNext').onclick = () => { rtState.low.page++; rtLoa
 document.getElementById('rtHighPrev').onclick = () => { if (rtState.high.page > 1) { rtState.high.page--; rtLoadPremium('high'); } };
 document.getElementById('rtHighNext').onclick = () => { rtState.high.page++; rtLoadPremium('high'); };
 
-function rtTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows — this fetches every page from the same API the
+// table itself uses and builds the CSV from that combined JSON instead.
+function rtCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+function rtRowsToCsv(header, rows, mapRow) {
+  const lines = [header.map(rtCsvField).join(',')];
+  rows.forEach((r) => { lines.push(mapRow(r).map(rtCsvField).join(',')); });
+  return lines.join('\\n');
 }
-function rtDownloadCsv(tableEl, filename) {
-  const blob = new Blob([rtTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+async function rtFetchAll(urlBase, sep) {
+  const first = await fetch(urlBase + sep + 'page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch(urlBase + sep + 'page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-document.getElementById('exportRtD1Btn').onclick = () => rtDownloadCsv(document.getElementById('rtD1Table'), 'day1-retention.csv');
-document.getElementById('exportRtLowBtn').onclick = () => rtDownloadCsv(document.getElementById('rtLowTable'), 'premium-active-low.csv');
-document.getElementById('exportRtHighBtn').onclick = () => rtDownloadCsv(document.getElementById('rtHighTable'), 'premium-active-high.csv');
+async function rtExport(urlBase, sep, filename, header, mapRow, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await rtFetchAll(urlBase, sep);
+    const blob = new Blob([rtRowsToCsv(header, rows, mapRow)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+const RT_D1_HEADER = ['User ID', 'Agent', 'Deposit Amount', 'Deposit Count', 'Region'];
+const RT_PREMIUM_HEADER = ['User ID', 'Agent', 'VIP', 'Deposit Amount', 'Deposit Count'];
+document.getElementById('exportRtD1Btn').onclick = (e) => rtExport(
+  '/api/dashboard/analytics/day1-retention', '?', 'day1-retention.csv', RT_D1_HEADER,
+  (r) => [r.user_id, r.agent, r.day_deposit, r.deposit_count, r.region], e.currentTarget
+);
+document.getElementById('exportRtLowBtn').onclick = (e) => rtExport(
+  '/api/dashboard/analytics/premium-active?tier=low', '&', 'premium-active-low.csv', RT_PREMIUM_HEADER,
+  (r) => [r.user_id, r.agent, r.current_level, r.day_deposit, r.deposit_count], e.currentTarget
+);
+document.getElementById('exportRtHighBtn').onclick = (e) => rtExport(
+  '/api/dashboard/analytics/premium-active?tier=high', '&', 'premium-active-high.csv', RT_PREMIUM_HEADER,
+  (r) => [r.user_id, r.agent, r.current_level, r.day_deposit, r.deposit_count], e.currentTarget
+);
 
 // Exposed so the Analytics page's 7-day tab picker (loaded before this
 // script) can re-trigger this section when the selected date changes.

@@ -103,19 +103,49 @@ document.getElementById('acLowNext').onclick = () => { acState.low.page++; acLoa
 document.getElementById('acHighPrev').onclick = () => { if (acState.high.page > 1) { acState.high.page--; acLoadTier('high'); } };
 document.getElementById('acHighNext').onclick = () => { acState.high.page++; acLoadTier('high'); };
 
-function acTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows (confirmed live: Low tier shows "Page 1 of 63" —
+// 629 matching rows total, but the old export produced a 10-row CSV).
+// This fetches every page from the same API the table itself uses and
+// builds the CSV from that combined JSON, independent of pagination state.
+const AC_EXPORT_HEADER = ['User ID', 'Agent', 'Current VIP Level', 'Next VIP Level', 'Total Deposit', 'Amount to Reach Next Level', 'Inactive Days'];
+function acCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+async function acFetchAllRows(tier) {
+  const first = await fetch('/api/dashboard/action-center/vip-near-upgrade?tier=' + tier + '&page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch('/api/dashboard/action-center/vip-near-upgrade?tier=' + tier + '&page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-function acDownloadCsv(tableEl, filename) {
-  const blob = new Blob([acTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+function acRowsToCsv(rows) {
+  const lines = [AC_EXPORT_HEADER.map(acCsvField).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.user_id, r.agent, r.current_level, r.next_level, r.total_deposit, r.gap, r.inactive_days].map(acCsvField).join(','));
+  });
+  return lines.join('\\n');
 }
-document.getElementById('exportAcLowBtn').onclick = () => acDownloadCsv(document.getElementById('acLowTable'), 'vip-near-upgrade-low.csv');
-document.getElementById('exportAcHighBtn').onclick = () => acDownloadCsv(document.getElementById('acHighTable'), 'vip-near-upgrade-high.csv');
+async function acExportTier(tier, filename, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await acFetchAllRows(tier);
+    const blob = new Blob([acRowsToCsv(rows)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+document.getElementById('exportAcLowBtn').onclick = (e) => acExportTier('low', 'vip-near-upgrade-low.csv', e.currentTarget);
+document.getElementById('exportAcHighBtn').onclick = (e) => acExportTier('high', 'vip-near-upgrade-high.csv', e.currentTarget);
 
 acLoadTier('low');
 acLoadTier('high');

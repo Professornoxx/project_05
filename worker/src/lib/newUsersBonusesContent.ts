@@ -83,16 +83,45 @@ async function nuLoad() {
 document.getElementById('nuPrev').onclick = () => { if (nuState.page > 1) { nuState.page--; nuLoad(); } };
 document.getElementById('nuNext').onclick = () => { nuState.page++; nuLoad(); };
 
-function nuTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows — this fetches every page from the same API the
+// table itself uses and builds the CSV from that combined JSON instead.
+const NU_EXPORT_HEADER = ['User ID', 'Agent', 'Current VIP Level', 'Deposit Count', 'Total Deposit', 'Total Withdrawal', 'Profit/Loss', 'Region'];
+function nuCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+async function nuFetchAllRows() {
+  const first = await fetch('/api/dashboard/action-center/yesterday-first-deposits?page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch('/api/dashboard/action-center/yesterday-first-deposits?page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-document.getElementById('exportNuBtn').onclick = () => {
-  const blob = new Blob([nuTableToCsv(document.getElementById('nuTable'))], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'yesterday-first-deposit-users.csv';
-  a.click();
+function nuRowsToCsv(rows) {
+  const lines = [NU_EXPORT_HEADER.map(nuCsvField).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.user_id, r.agent, r.current_level, r.deposit_count, r.total_deposit, r.total_withdrawal, r.profit_loss, r.region].map(nuCsvField).join(','));
+  });
+  return lines.join('\\n');
+}
+document.getElementById('exportNuBtn').onclick = async (e) => {
+  const btn = e.currentTarget;
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await nuFetchAllRows();
+    const blob = new Blob([nuRowsToCsv(rows)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'yesterday-first-deposit-users.csv';
+    a.click();
+  } catch (err) {
+    alert('Export failed: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 };
 
 nuLoad();
