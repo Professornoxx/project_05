@@ -271,29 +271,54 @@ def update_master_aggregates(table: str, deltas: dict[int, dict]) -> int:
     (per a July-5 master-sheet export) had eroded to 92,000 in the live DB
     purely from this recompute running on their later deposits. Only
     deposit/withdraw map to a Master DB column; wallet_details has none yet
-    and never reaches this function (see sync_source)."""
+    and never reaches this function (see sync_source).
+
+    Batched: one CASE-based UPDATE per chunk of users instead of one UPDATE
+    per user — a typical sync touches 20-50 users, which used to mean
+    20-50 separate D1 round trips here alone. CHUNK is sized to stay well
+    under D1's ~100-bound-parameter-per-statement ceiling (see the
+    CHUNK_SIZE comment above): worst case (deposits, with count_column) is
+    2 params/user for the amount CASE + 2 for the count CASE + 1 user_id
+    in the WHERE IN clause = 5/user, so 15 users/chunk stays at 76 params."""
     column = "total_deposit" if table == "deposits" else "total_withdrawal"
     count_column = "deposit_count" if table == "deposits" else None
     now = datetime.now(timezone.utc).isoformat()
 
+    to_update = {uid: d for uid, d in deltas.items() if d["amount"] != 0 or d["count"] != 0}
+    if not to_update:
+        return 0
+
+    user_ids = list(to_update.keys())
+    CHUNK = 15
     updated = 0
-    for user_id, delta in deltas.items():
-        if delta["amount"] == 0 and delta["count"] == 0:
-            continue
+    for i in range(0, len(user_ids), CHUNK):
+        chunk_ids = user_ids[i : i + CHUNK]
+        placeholders = ",".join("?" for _ in chunk_ids)
+        amount_case = " ".join("WHEN ? THEN ?" for _ in chunk_ids)
+        amount_params = []
+        for uid in chunk_ids:
+            amount_params.extend([uid, to_update[uid]["amount"]])
+
         if count_column:
-            cf_client.d1_query(
-                DAILY_DB_ID,
-                f"UPDATE users SET {column} = COALESCE({column}, 0) + ?, "
-                f"{count_column} = COALESCE({count_column}, 0) + ?, update_time = ? WHERE user_id = ?",
-                [delta["amount"], delta["count"], now, user_id],
+            count_case = " ".join("WHEN ? THEN ?" for _ in chunk_ids)
+            count_params = []
+            for uid in chunk_ids:
+                count_params.extend([uid, to_update[uid]["count"]])
+            sql = (
+                f"UPDATE users SET {column} = COALESCE({column}, 0) + CASE user_id {amount_case} ELSE 0 END, "
+                f"{count_column} = COALESCE({count_column}, 0) + CASE user_id {count_case} ELSE 0 END, "
+                f"update_time = ? WHERE user_id IN ({placeholders})"
             )
+            params = amount_params + count_params + [now] + chunk_ids
         else:
-            cf_client.d1_query(
-                DAILY_DB_ID,
-                f"UPDATE users SET {column} = COALESCE({column}, 0) + ?, update_time = ? WHERE user_id = ?",
-                [delta["amount"], now, user_id],
+            sql = (
+                f"UPDATE users SET {column} = COALESCE({column}, 0) + CASE user_id {amount_case} ELSE 0 END, "
+                f"update_time = ? WHERE user_id IN ({placeholders})"
             )
-        updated += 1
+            params = amount_params + [now] + chunk_ids
+
+        cf_client.d1_query(DAILY_DB_ID, sql, params)
+        updated += len(chunk_ids)
     return updated
 
 
