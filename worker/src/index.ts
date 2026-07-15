@@ -104,6 +104,18 @@ function vipLevelCase(expr: string): string {
     WHEN ${expr} < 44795600 THEN 12 WHEN ${expr} < 69795600 THEN 13 ELSE 14 END`;
 }
 
+// Companion to vipLevelCase: the upper bound of each bracket above (i.e.
+// the deposit total needed to reach the NEXT level) — same 14 brackets,
+// same duplication problem, factored out for the same reason.
+function vipNextLevelMinCase(expr: string): string {
+  return `CASE
+    WHEN ${expr} < 100 THEN 100 WHEN ${expr} < 600 THEN 600 WHEN ${expr} < 5600 THEN 5600
+    WHEN ${expr} < 15600 THEN 15600 WHEN ${expr} < 95600 THEN 95600 WHEN ${expr} < 295600 THEN 295600
+    WHEN ${expr} < 795600 THEN 795600 WHEN ${expr} < 1795600 THEN 1795600 WHEN ${expr} < 3795600 THEN 3795600
+    WHEN ${expr} < 8795600 THEN 8795600 WHEN ${expr} < 16795600 THEN 16795600 WHEN ${expr} < 28795600 THEN 28795600
+    WHEN ${expr} < 44795600 THEN 44795600 WHEN ${expr} < 69795600 THEN 69795600 ELSE NULL END`;
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -170,18 +182,8 @@ export default {
       // WHEN d < X THEN Y pairs are the upper bound of each VIP bracket —
       // shared by both the "current level" and "next level's floor" CASE
       // expressions below, just returning a different value per branch.
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
-      const NEXT_LEVEL_MIN = `CASE
-        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
-        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
-        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
-        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
-        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
+      const NEXT_LEVEL_MIN = vipNextLevelMinCase("total_deposit");
 
       const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
 
@@ -235,12 +237,7 @@ export default {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 10, 180] : [5, 14, 15, 240];
 
@@ -311,12 +308,7 @@ export default {
       yesterday.setUTCDate(yesterday.getUTCDate() - 1);
       const yesterdayStr = yesterday.toISOString().slice(0, 10);
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const CTE = `WITH first_deposit_users AS (
           SELECT user_id, MIN(region) as region
@@ -386,12 +378,7 @@ export default {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const [minLevel, maxLevel, maxDays] = tier === "low" ? [2, 4, 10] : [5, 14, 15];
 
@@ -471,12 +458,7 @@ export default {
       let cohortBind: (string | null)[];
       if (cohortScope === "vip-near-upgrade" && source === "deposit") {
         const CURRENT_LEVEL = vipLevelCase("total_deposit");
-        const NEXT_LEVEL_MIN = `CASE
-          WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
-          WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
-          WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
-          WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
-          WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+        const NEXT_LEVEL_MIN = vipNextLevelMinCase("total_deposit");
         const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
         cohortClause = `AND user_id IN (
           SELECT user_id FROM (
@@ -491,23 +473,35 @@ export default {
         cohortBind = agentFilter ? [agentFilter] : [];
       }
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `SELECT ${RANGE_CASE} as range, COUNT(*) as totalOrders, COALESCE(SUM(amount),0) as totalAmount
-           FROM ${table} WHERE date(create_time) = ? AND ${statusClause} ${cohortClause} GROUP BY range`
-        )
-        .bind(date, ...cohortBind)
-        .all<{ range: string; totalOrders: number; totalAmount: number }>();
+      // Called on every dashboard page (Home x2, Action Center, Analytics,
+      // Performance, Platform Analysis) — the single most frequently-hit
+      // endpoint site-wide, and cheap to cache correctly: the cache key
+      // includes every input that changes the result (source/date/scope/
+      // tier/agentFilter), so an agent session can never see another
+      // agent's — or the admin's unscoped — numbers. Source data only
+      // changes on sync (roughly hourly), so a short TTL trades negligible
+      // staleness for a big cut in repeat-load D1 cost.
+      const cacheKey = `amount-range:${source}:${date}:${cohortScope}:${tier}:${agentFilter ?? "all"}`;
+      const payload = await cachedJson(env, cacheKey, async () => {
+        const rows = await env.daily_records_db
+          .prepare(
+            `SELECT ${RANGE_CASE} as range, COUNT(*) as totalOrders, COALESCE(SUM(amount),0) as totalAmount
+             FROM ${table} WHERE date(create_time) = ? AND ${statusClause} ${cohortClause} GROUP BY range`
+          )
+          .bind(date, ...cohortBind)
+          .all<{ range: string; totalOrders: number; totalAmount: number }>();
 
-      const byRange: Record<string, { totalOrders: number; totalAmount: number }> = {};
-      rows.results.forEach((r) => { byRange[r.range] = { totalOrders: r.totalOrders, totalAmount: r.totalAmount }; });
-      const ranges = RANGE_ORDER.map((range) => ({ range, ...(byRange[range] ?? { totalOrders: 0, totalAmount: 0 }) }));
-      const total = ranges.reduce(
-        (acc, r) => ({ totalOrders: acc.totalOrders + r.totalOrders, totalAmount: acc.totalAmount + r.totalAmount }),
-        { totalOrders: 0, totalAmount: 0 }
-      );
+        const byRange: Record<string, { totalOrders: number; totalAmount: number }> = {};
+        rows.results.forEach((r) => { byRange[r.range] = { totalOrders: r.totalOrders, totalAmount: r.totalAmount }; });
+        const ranges = RANGE_ORDER.map((range) => ({ range, ...(byRange[range] ?? { totalOrders: 0, totalAmount: 0 }) }));
+        const total = ranges.reduce(
+          (acc, r) => ({ totalOrders: acc.totalOrders + r.totalOrders, totalAmount: acc.totalAmount + r.totalAmount }),
+          { totalOrders: 0, totalAmount: 0 }
+        );
+        return { date, source, scope: cohortScope, tier, ranges, total };
+      });
 
-      return Response.json({ date, source, scope: cohortScope, tier, ranges, total });
+      return Response.json(payload);
     }
 
     // Last-sync freshness indicator, shown in the shared dashboard header on
@@ -565,51 +559,61 @@ export default {
       const scopeClause = agentFilter ? `AND user_id IN (${agentUserIds})` : "";
       const scopeBind = agentFilter ? [agentFilter] : [];
 
-      const depositAgg = await env.daily_records_db
-        .prepare(
-          `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause}`
-        )
-        .bind(date, ...scopeBind)
-        .first<{ total: number; orders: number; users: number }>();
+      // Hit on every load of the Home page's top KPI row (the first thing
+      // both admin and every agent dashboard render) — 4 queries per
+      // request, cached the same way as amount-range above: key includes
+      // date + agentFilter so scopes never cross, short TTL since source
+      // data only changes on sync.
+      const cacheKey = `home-stats:${date}:${agentFilter ?? "all"}`;
+      const payload = await cachedJson(env, cacheKey, async () => {
+        const depositAgg = await env.daily_records_db
+          .prepare(
+            `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
+             FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause}`
+          )
+          .bind(date, ...scopeBind)
+          .first<{ total: number; orders: number; users: number }>();
 
-      const withdrawAgg = await env.daily_records_db
-        .prepare(
-          `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
-           FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) IN (0,1,2) ${scopeClause}`
-        )
-        .bind(date, ...scopeBind)
-        .first<{ total: number; orders: number; users: number }>();
+        const withdrawAgg = await env.daily_records_db
+          .prepare(
+            `SELECT COALESCE(SUM(amount),0) as total, COUNT(*) as orders, COUNT(DISTINCT user_id) as users
+             FROM withdrawals WHERE date(create_time) = ? AND CAST(status AS REAL) IN (0,1,2) ${scopeClause}`
+          )
+          .bind(date, ...scopeBind)
+          .first<{ total: number; orders: number; users: number }>();
 
-      const activeUsersRow = await env.daily_records_db
-        .prepare(
-          `SELECT COUNT(DISTINCT user_id) as c FROM (
-             SELECT user_id FROM deposits WHERE date(create_time) = ? ${scopeClause}
-             UNION
-             SELECT user_id FROM withdrawals WHERE date(create_time) = ? ${scopeClause}
-             UNION
-             SELECT user_id FROM wallet_details WHERE date(create_time) = ? ${scopeClause}
-           )`
-        )
-        .bind(date, ...scopeBind, date, ...scopeBind, date, ...scopeBind)
-        .first<{ c: number }>();
+        const activeUsersRow = await env.daily_records_db
+          .prepare(
+            `SELECT COUNT(DISTINCT user_id) as c FROM (
+               SELECT user_id FROM deposits WHERE date(create_time) = ? ${scopeClause}
+               UNION
+               SELECT user_id FROM withdrawals WHERE date(create_time) = ? ${scopeClause}
+               UNION
+               SELECT user_id FROM wallet_details WHERE date(create_time) = ? ${scopeClause}
+             )`
+          )
+          .bind(date, ...scopeBind, date, ...scopeBind, date, ...scopeBind)
+          .first<{ c: number }>();
 
-      const totalUsersRow = agentFilter
-        ? await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users WHERE assigned_agent = ?`).bind(agentFilter).first<{ c: number }>()
-        : await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
+        const totalUsersRow = agentFilter
+          ? await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users WHERE assigned_agent = ?`).bind(agentFilter).first<{ c: number }>()
+          : await env.daily_records_db.prepare(`SELECT COUNT(*) as c FROM users`).first<{ c: number }>();
 
-      return Response.json({
-        date,
-        totalUsers: totalUsersRow?.c ?? 0,
-        registeredActive: totalUsersRow?.c ?? 0,
-        totalDeposit: depositAgg?.total ?? 0,
-        totalWithdraw: withdrawAgg?.total ?? 0,
-        depositOrders: depositAgg?.orders ?? 0,
-        withdrawOrders: withdrawAgg?.orders ?? 0,
-        depositUsers: depositAgg?.users ?? 0,
-        withdrawUsers: withdrawAgg?.users ?? 0,
-        activeUsers: activeUsersRow?.c ?? 0,
+        return {
+          date,
+          totalUsers: totalUsersRow?.c ?? 0,
+          registeredActive: totalUsersRow?.c ?? 0,
+          totalDeposit: depositAgg?.total ?? 0,
+          totalWithdraw: withdrawAgg?.total ?? 0,
+          depositOrders: depositAgg?.orders ?? 0,
+          withdrawOrders: withdrawAgg?.orders ?? 0,
+          depositUsers: depositAgg?.users ?? 0,
+          withdrawUsers: withdrawAgg?.users ?? 0,
+          activeUsers: activeUsersRow?.c ?? 0,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Deposit Analysis (dashboard section 2): amount-range breakdown,
@@ -986,12 +990,7 @@ export default {
 
       const date = url.searchParams.get("date") || todayIST();
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const CTE = `WITH day_dep AS (
           SELECT user_id, SUM(amount) as day_deposit, MIN(region) as region
@@ -1058,12 +1057,7 @@ export default {
 
       const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 10, 180] : [5, 14, 15, 240];
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
@@ -1141,7 +1135,7 @@ export default {
     // lookup merged in memory. vip_after can't be a stored column (it
     // depends on today's deposit total, computed per-request), so the
     // same bracket CASE expression is reused with its input swapped to
-    // "total_deposit + today's deposit" via levelCaseFor().
+    // "total_deposit + today's deposit" via vipLevelCase().
     if (url.pathname === "/api/dashboard/analytics/vip-upgrade" && request.method === "GET") {
       const scope = await requireDashboardOrAgentScope(request, env);
       if (scope instanceof Response) return scope;
@@ -1157,19 +1151,8 @@ export default {
 
       const [minLevel, maxLevel, maxGap] = tier === "low" ? [2, 4, 1000] : [5, 13, 50000];
 
-      const levelCaseFor = (expr: string) => `CASE
-        WHEN ${expr} < 100 THEN 0 WHEN ${expr} < 600 THEN 1 WHEN ${expr} < 5600 THEN 2
-        WHEN ${expr} < 15600 THEN 3 WHEN ${expr} < 95600 THEN 4 WHEN ${expr} < 295600 THEN 5
-        WHEN ${expr} < 795600 THEN 6 WHEN ${expr} < 1795600 THEN 7 WHEN ${expr} < 3795600 THEN 8
-        WHEN ${expr} < 8795600 THEN 9 WHEN ${expr} < 16795600 THEN 10 WHEN ${expr} < 28795600 THEN 11
-        WHEN ${expr} < 44795600 THEN 12 WHEN ${expr} < 69795600 THEN 13 ELSE 14 END`;
-      const CURRENT_LEVEL = levelCaseFor("total_deposit");
-      const NEXT_LEVEL_MIN = `CASE
-        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
-        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
-        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
-        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
-        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
+      const NEXT_LEVEL_MIN = vipNextLevelMinCase("total_deposit");
 
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, total_deposit,
@@ -1190,8 +1173,8 @@ export default {
           WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
         )`;
       const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, maxGap, anchorDate, threeDaysAgoStr, anchorDate];
-      const VIP_AFTER_TODAY = levelCaseFor("(c.total_deposit + t.day_deposit)");
-      const VIP_AFTER_3DAY = levelCaseFor("(c.total_deposit + t3.amt)");
+      const VIP_AFTER_TODAY = vipLevelCase("(c.total_deposit + t.day_deposit)");
+      const VIP_AFTER_3DAY = vipLevelCase("(c.total_deposit + t3.amt)");
 
       const cohortCountRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
@@ -1338,12 +1321,7 @@ export default {
       // so this now reuses that exact definition.
       const [minLevel, maxLevel, maxDays] = tier === "low" ? [2, 4, 10] : [5, 14, 15];
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const CTE = `WITH cohort AS (
           SELECT user_id, assigned_agent as agent, ${CURRENT_LEVEL} as current_level,
@@ -1442,18 +1420,8 @@ export default {
       })();
       const rangeEnd = rangeParam === "yesterday" ? rangeStart : anchorDate;
 
-      const CURRENT_LEVEL = `CASE
-        WHEN total_deposit < 100 THEN 0 WHEN total_deposit < 600 THEN 1 WHEN total_deposit < 5600 THEN 2
-        WHEN total_deposit < 15600 THEN 3 WHEN total_deposit < 95600 THEN 4 WHEN total_deposit < 295600 THEN 5
-        WHEN total_deposit < 795600 THEN 6 WHEN total_deposit < 1795600 THEN 7 WHEN total_deposit < 3795600 THEN 8
-        WHEN total_deposit < 8795600 THEN 9 WHEN total_deposit < 16795600 THEN 10 WHEN total_deposit < 28795600 THEN 11
-        WHEN total_deposit < 44795600 THEN 12 WHEN total_deposit < 69795600 THEN 13 ELSE 14 END`;
-      const NEXT_LEVEL_MIN = `CASE
-        WHEN total_deposit < 100 THEN 100 WHEN total_deposit < 600 THEN 600 WHEN total_deposit < 5600 THEN 5600
-        WHEN total_deposit < 15600 THEN 15600 WHEN total_deposit < 95600 THEN 95600 WHEN total_deposit < 295600 THEN 295600
-        WHEN total_deposit < 795600 THEN 795600 WHEN total_deposit < 1795600 THEN 1795600 WHEN total_deposit < 3795600 THEN 3795600
-        WHEN total_deposit < 8795600 THEN 8795600 WHEN total_deposit < 16795600 THEN 16795600 WHEN total_deposit < 28795600 THEN 28795600
-        WHEN total_deposit < 44795600 THEN 44795600 WHEN total_deposit < 69795600 THEN 69795600 ELSE NULL END`;
+      const CURRENT_LEVEL = vipLevelCase("total_deposit");
+      const NEXT_LEVEL_MIN = vipNextLevelMinCase("total_deposit");
       const vipLevel = (totalDeposit: number): number => {
         const brackets = [100, 600, 5600, 15600, 95600, 295600, 795600, 1795600, 3795600, 8795600, 16795600, 28795600, 44795600, 69795600];
         for (let i = 0; i < brackets.length; i++) if (totalDeposit < brackets[i]) return i;
@@ -1905,34 +1873,42 @@ export default {
         )`;
       const cteArgs = [cohortStartStr, cohortEndStr, cohortStartStr, anchorDate];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM channel_stats`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+      // Heaviest query on this page (3 CTEs incl. a self-join over the
+      // deposits table's whole cohort window) and admin-only (no per-agent
+      // scoping to worry about in the cache key) — key on date+page since
+      // those are the only inputs, short TTL matching sync cadence.
+      const payload = await cachedJson(env, `platform-analysis:channel-performance:${anchorDate}:${page}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM channel_stats`)
+          .bind(...cteArgs)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT channel, fd_users, fd_amount, fd_amount / fd_users as avg_fd,
-                  d2_users, (100.0 * d2_users / fd_users) as d2_pct,
-                  d3_users, (100.0 * d3_users / fd_users) as d3_pct
-           FROM channel_stats
-           ORDER BY fd_users DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT channel, fd_users, fd_amount, fd_amount / fd_users as avg_fd,
+                    d2_users, (100.0 * d2_users / fd_users) as d2_pct,
+                    d3_users, (100.0 * d3_users / fd_users) as d3_pct
+             FROM channel_stats
+             ORDER BY fd_users DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        date: anchorDate,
-        cohortStart: cohortStartStr,
-        cohortEnd: cohortEndStr,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          date: anchorDate,
+          cohortStart: cohortStartStr,
+          cohortEnd: cohortEndStr,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 2, panel 2: Net Revenue by Region & VIP.

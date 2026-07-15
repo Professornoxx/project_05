@@ -278,10 +278,17 @@ document.getElementById('logoutLink').onclick = async (e) => {
     (d.bySource || []).forEach((r) => { bySource[r.source] = r.last_success; });
     // manual_upload only runs when someone manually uploads a master sheet,
     // not on the hourly cron — it always looks "stale" between uploads by
-    // design, so it's excluded here to avoid flagging the whole banner red
-    // over a source that isn't supposed to run continuously.
+    // design. cron_backup isn't a data sync at all — it's the Cloudflare
+    // Cron Trigger that dispatches etl-hourly.yml as a reliability backup
+    // for GitHub's own schedule trigger (see worker-upload/src/index.ts);
+    // its "success" just means the dispatch API call worked, not that any
+    // data changed. Both are excluded here so neither drags the freshness
+    // banner red over a source that was never meant to represent data
+    // recency — a real cron_backup FAILURE still surfaces via
+    // recentFailure below, which isn't source-filtered.
+    const NON_DATA_SOURCES = ['manual_upload', 'cron_backup'];
     const timestamps = Object.entries(bySource)
-      .filter(([source, t]) => source !== 'manual_upload' && Boolean(t))
+      .filter(([source, t]) => !NON_DATA_SOURCES.includes(source) && Boolean(t))
       .map(([, t]) => new Date(t).getTime());
     if (timestamps.length === 0) {
       badge.textContent = 'No successful sync yet';

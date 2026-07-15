@@ -40,7 +40,17 @@ function requireAdmin(request: Request, env: Env): Response | null {
 // is a single fast outbound request with no CPU ceiling of its own; the
 // actual sync work runs on GitHub's infrastructure, same as the hourly
 // cron and every manual `gh workflow run` used to unblock this by hand.
-async function triggerGithubSync(env: Env): Promise<{ dispatched: boolean; error?: string }> {
+// One retry on failure (transient network blips / GitHub API hiccups are
+// the common case) before giving up — confirmed live: this dispatch was
+// firing correctly every hour for 8 hours straight (00:00-05:00, each
+// producing a real workflow_dispatch run) then started failing silently
+// for several hours (06:00-11:00) with zero visible signal anywhere except
+// Cloudflare's ephemeral console.log, which nobody was watching. A single
+// retry won't fix a persistently-bad token, but it does cover the more
+// common transient case, and either way the caller now persists the
+// outcome to sync_runs (see scheduled() below) so a failure — retried or
+// not — is finally visible on the dashboard instead of disappearing.
+async function triggerGithubSyncOnce(env: Env): Promise<{ dispatched: boolean; error?: string }> {
   if (!env.GITHUB_TOKEN || !env.GITHUB_REPO) {
     return { dispatched: false, error: "GITHUB_TOKEN/GITHUB_REPO secret not configured" };
   }
@@ -65,6 +75,13 @@ async function triggerGithubSync(env: Env): Promise<{ dispatched: boolean; error
   }
 }
 
+async function triggerGithubSync(env: Env): Promise<{ dispatched: boolean; error?: string }> {
+  const first = await triggerGithubSyncOnce(env);
+  if (first.dispatched) return first;
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  return triggerGithubSyncOnce(env);
+}
+
 export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     const executionId = `${controller.cron}-${controller.scheduledTime}`;
@@ -85,9 +102,26 @@ export default {
 
     if (controller.cron === HOURLY_SYNC_BACKUP_CRON) {
       ctx.waitUntil(
-        triggerGithubSync(env)
-          .then((result) => console.log("hourly sync backup dispatch:", JSON.stringify(result)))
-          .catch((err) => console.error("hourly sync backup dispatch failed:", err))
+        (async () => {
+          const startedAt = new Date().toISOString();
+          const result = await triggerGithubSync(env).catch(
+            (err) => ({ dispatched: false, error: err instanceof Error ? err.message : String(err) })
+          );
+          console.log("hourly sync backup dispatch:", JSON.stringify(result));
+          // Persisted so a dispatch failure is visible on the dashboard's
+          // last-sync banner (as a recentFailure) and queryable in
+          // sync_runs, instead of only existing in Cloudflare's ephemeral
+          // console log — the gap this closes: this cron fired reliably
+          // every hour (confirmed via SYNC_KV markers) while the dispatch
+          // itself silently failed for hours with no visible trace.
+          await env.daily_records_db
+            .prepare(
+              `INSERT INTO sync_runs (source, started_at, finished_at, status, rows_upserted, error_message) VALUES (?, ?, ?, ?, 0, ?)`
+            )
+            .bind("cron_backup", startedAt, new Date().toISOString(), result.dispatched ? "success" : "failed", result.error ?? null)
+            .run()
+            .catch((err) => console.error("failed to log cron_backup sync_runs row:", err));
+        })()
       );
     }
   },
