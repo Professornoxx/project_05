@@ -459,6 +459,9 @@ document.querySelectorAll('#paNewOldTabs button').forEach((btn) => {
 document.getElementById('paNewOldPrev').onclick = () => { if (paNewOldState.page > 1) { paNewOldState.page--; paLoadNewOld(); } };
 document.getElementById('paNewOldNext').onclick = () => { paNewOldState.page++; paLoadNewOld(); };
 
+// Net Revenue and Bonus Claim Report are single fixed-size loads (top 20 /
+// top 50, no pagination) — exporting the rendered table already captures
+// everything, so those two keep the simple DOM-based export below.
 function paTableToCsv(tableEl) {
   const rows = [...tableEl.querySelectorAll('tr')];
   return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
@@ -470,12 +473,98 @@ function paDownloadCsv(tableEl, filename) {
   a.download = filename;
   a.click();
 }
-document.getElementById('paExportProfit').onclick = () => paDownloadCsv(document.getElementById('paProfitTable'), 'profit-users-of-the-day.csv');
-document.getElementById('paExportSuspicious').onclick = () => paDownloadCsv(document.getElementById('paSuspiciousTable'), 'suspicious-withdraw-users.csv');
-document.getElementById('paExportChannel').onclick = () => paDownloadCsv(document.getElementById('paChannelTable'), 'channel-performance.csv');
+
+// Profit Users, Suspicious Withdrawals, Channel Performance, and New vs Old
+// ARE paginated — exporting from the rendered table only ever captured the
+// current page's 10 rows. These fetch every page from the same API the
+// table itself uses and build the CSV from that combined JSON instead.
+function paCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+function paRowsToCsv(header, rows, mapRow) {
+  const lines = [header.map(paCsvField).join(',')];
+  rows.forEach((r) => { lines.push(mapRow(r).map(paCsvField).join(',')); });
+  return lines.join('\\n');
+}
+async function paFetchAllPages(urlBase, sep) {
+  const first = await fetch(urlBase + sep + 'page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch(urlBase + sep + 'page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
+}
+async function paExportPaginated(urlBase, sep, filename, header, mapRow, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await paFetchAllPages(urlBase, sep);
+    const blob = new Blob([paRowsToCsv(header, rows, mapRow)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+function paQualityLabel(fdUsers, avgFd, d2Pct) {
+  if (fdUsers > 0 && avgFd >= 1000) return 'High value';
+  if (d2Pct >= 25) return 'Good';
+  if (d2Pct >= 15) return 'Average';
+  return 'Weak';
+}
+
+document.getElementById('paExportProfit').onclick = (e) => paExportPaginated(
+  '/api/dashboard/platform-analysis/profit-users' + (paState.profit.newOnly ? '?newOnly=1' : '?x=1'), '&',
+  'profit-users-of-the-day.csv',
+  ['User ID', 'Agent', 'VIP', 'Deposit Today', 'Wallet Balance', 'Withdraw Today', 'Net Deposit', 'Last Deposit', 'Last Withdraw'],
+  (r) => [r.user_id, r.agent, r.vip, r.dep_today, r.wallet_bal, r.wd_today, r.net_dep, r.last_dep, r.last_wd],
+  e.currentTarget
+);
+document.getElementById('paExportSuspicious').onclick = (e) => paExportPaginated(
+  '/api/dashboard/platform-analysis/suspicious-withdrawals', '?',
+  'suspicious-withdraw-users.csv',
+  ['User ID', 'Agent', 'VIP', 'Deposit (3d)', 'Withdraw (3d)', 'Games (3d)'],
+  (r) => [r.user_id, r.agent, r.vip, r.deposit_3d, r.withdraw_3d, r.games_3d],
+  e.currentTarget
+);
+document.getElementById('paExportChannel').onclick = (e) => paExportPaginated(
+  '/api/dashboard/platform-analysis/channel-performance', '?',
+  'channel-performance.csv',
+  ['Channel', 'FD Users', 'FD Amount', 'Avg FD', 'D2 Users', 'D2 %', 'D3 Users', 'D3 %', 'Quality'],
+  (r) => [r.channel, r.fd_users, r.fd_amount, r.avg_fd, r.d2_users, r.d2_pct, r.d3_users, r.d3_pct, paQualityLabel(r.fd_users, r.avg_fd, r.d2_pct)],
+  e.currentTarget
+);
 document.getElementById('paExportRevenue').onclick = () => paDownloadCsv(document.getElementById('paRevenueTable'), 'net-revenue-by-' + paRevenueState.by + '.csv');
 document.getElementById('paExportBonus').onclick = () => paDownloadCsv(document.getElementById('paBonusTable'), 'bonus-claim-report.csv');
-document.getElementById('paExportNewOld').onclick = () => paDownloadCsv(document.getElementById('paNewOldTable'), 'new-vs-old-user-analysis-' + paNewOldState.view + '.csv');
+document.getElementById('paExportNewOld').onclick = (e) => {
+  if (paNewOldState.view === 'daily') {
+    paExportPaginated(
+      '/api/dashboard/platform-analysis/new-vs-old', '?',
+      'new-vs-old-user-analysis-daily.csv',
+      ['Date', 'Old Users', 'Avg Dep (Old)', 'New Users', 'Avg Dep (New)', 'Old WD Users', 'Avg WD (Old)', 'New WD Users', 'Avg WD (New)', 'Total Deposit', 'Total Depositors'],
+      (r) => [r.date, r.old_users, r.avg_dep_old, r.new_users, r.avg_dep_new, r.old_wd_users, r.avg_wd_old, r.new_wd_users, r.avg_wd_new, r.total_deposit, r.total_depositors],
+      e.currentTarget
+    );
+  } else {
+    paExportPaginated(
+      '/api/dashboard/platform-analysis/new-user-retention', '?',
+      'new-vs-old-user-analysis-retention.csv',
+      ['Date', 'New Users', 'Withdrew - Count', 'Withdrew - Returned', 'Withdrew - Retention %', 'Never Withdrew - Count', 'Never Withdrew - Returned', 'Never Withdrew - Retention %'],
+      (r) => [
+        r.date, r.new_users, r.withdrew_count, r.withdrew_returned,
+        r.withdrew_count > 0 ? (100 * r.withdrew_returned / r.withdrew_count).toFixed(2) : '0',
+        r.never_withdrew_count, r.never_withdrew_returned,
+        r.never_withdrew_count > 0 ? (100 * r.never_withdrew_returned / r.never_withdrew_count).toFixed(2) : '0',
+      ],
+      e.currentTarget
+    );
+  }
+};
 
 paLoadProfit();
 paLoadSuspicious();

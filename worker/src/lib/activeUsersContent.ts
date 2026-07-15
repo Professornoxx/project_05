@@ -109,19 +109,47 @@ document.getElementById('auLowNext').onclick = () => { auState.low.page++; auLoa
 document.getElementById('auHighPrev').onclick = () => { if (auState.high.page > 1) { auState.high.page--; auLoadTier('high'); } };
 document.getElementById('auHighNext').onclick = () => { auState.high.page++; auLoadTier('high'); };
 
-function auTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows — this fetches every page from the same API the
+// table itself uses and builds the CSV from that combined JSON instead.
+const AU_EXPORT_HEADER = ['User ID', 'Agent', 'Current VIP Level', 'Total Deposit', 'Wallet Balance', 'Inactive Days'];
+function auCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+async function auFetchAllRows(tier) {
+  const first = await fetch('/api/dashboard/action-center/active-users?tier=' + tier + '&page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch('/api/dashboard/action-center/active-users?tier=' + tier + '&page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-function auDownloadCsv(tableEl, filename) {
-  const blob = new Blob([auTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+function auRowsToCsv(rows) {
+  const lines = [AU_EXPORT_HEADER.map(auCsvField).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.user_id, r.agent, r.current_level, r.total_deposit, r.user_balance, r.inactive_days].map(auCsvField).join(','));
+  });
+  return lines.join('\\n');
 }
-document.getElementById('exportAuLowBtn').onclick = () => auDownloadCsv(document.getElementById('auLowTable'), 'active-users-low.csv');
-document.getElementById('exportAuHighBtn').onclick = () => auDownloadCsv(document.getElementById('auHighTable'), 'active-users-high.csv');
+async function auExportTier(tier, filename, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await auFetchAllRows(tier);
+    const blob = new Blob([auRowsToCsv(rows)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+document.getElementById('exportAuLowBtn').onclick = (e) => auExportTier('low', 'active-users-low.csv', e.currentTarget);
+document.getElementById('exportAuHighBtn').onclick = (e) => auExportTier('high', 'active-users-high.csv', e.currentTarget);
 
 auLoadTier('low');
 auLoadTier('high');

@@ -154,19 +154,47 @@ document.getElementById('vuLowNext').onclick = () => { vuState.low.page++; vuLoa
 document.getElementById('vuHighPrev').onclick = () => { if (vuState.high.page > 1) { vuState.high.page--; vuLoadTier('high'); } };
 document.getElementById('vuHighNext').onclick = () => { vuState.high.page++; vuLoadTier('high'); };
 
-function vuTableToCsv(tableEl) {
-  const rows = [...tableEl.querySelectorAll('tr')];
-  return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
+// Exporting straight from the rendered <table> only ever captured the
+// current page's 10 rows — this fetches every page from the same API the
+// table itself uses and builds the CSV from that combined JSON instead.
+const VU_EXPORT_HEADER = ['User ID', 'Agent', 'VIP Before', 'VIP After', 'Today Deposit', 'Amount Over Minimum'];
+function vuCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
+async function vuFetchAllRows(tier) {
+  const first = await fetch('/api/dashboard/analytics/vip-upgrade?tier=' + tier + '&page=1').then((r) => r.json());
+  let rows = first.rows || [];
+  for (let page = 2; page <= (first.totalPages || 1); page++) {
+    const d = await fetch('/api/dashboard/analytics/vip-upgrade?tier=' + tier + '&page=' + page).then((r) => r.json());
+    rows = rows.concat(d.rows || []);
+  }
+  return rows;
 }
-function vuDownloadCsv(tableEl, filename) {
-  const blob = new Blob([vuTableToCsv(tableEl)], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
+function vuRowsToCsv(rows) {
+  const lines = [VU_EXPORT_HEADER.map(vuCsvField).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.user_id, r.agent, r.vip_before, r.vip_after, r.day_deposit, r.amount_over_minimum].map(vuCsvField).join(','));
+  });
+  return lines.join('\\n');
 }
-document.getElementById('exportVuLowBtn').onclick = () => vuDownloadCsv(document.getElementById('vuLowTable'), 'vip-upgrade-low.csv');
-document.getElementById('exportVuHighBtn').onclick = () => vuDownloadCsv(document.getElementById('vuHighTable'), 'vip-upgrade-high.csv');
+async function vuExportTier(tier, filename, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Exporting…';
+  try {
+    const rows = await vuFetchAllRows(tier);
+    const blob = new Blob([vuRowsToCsv(rows)], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+}
+document.getElementById('exportVuLowBtn').onclick = (e) => vuExportTier('low', 'vip-upgrade-low.csv', e.currentTarget);
+document.getElementById('exportVuHighBtn').onclick = (e) => vuExportTier('high', 'vip-upgrade-high.csv', e.currentTarget);
 
 // Exposed so the Analytics page's 7-day tab picker (loaded before this
 // script) can re-trigger this section when the selected date changes.
