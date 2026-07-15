@@ -132,6 +132,10 @@ export const SEARCH_USER_RESULT_PANEL_HTML = `
 
 export const SEARCH_USER_SHARED_SCRIPT = `
 function suFmtInr(n) { return n === null || n === undefined ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
+// Wallet balance is real money down to paise (e.g. 0.10, 129.15) — rounding
+// to whole rupees like the lifetime totals above made any balance under ₹1
+// display as a flat "₹0", indistinguishable from a genuinely empty wallet.
+function suFmtInrDecimal(n) { return n === null || n === undefined ? '—' : '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function suFmt(v) { return v === null || v === undefined || v === '' ? '—' : v; }
 function suFmtDateTime(v) { if (!v) return '—'; return String(v).replace('T', ' ').slice(0, 16); }
 function suFinItem(label, value, cls) {
@@ -157,16 +161,16 @@ function suRenderHeader(u) {
   document.getElementById('suHeaderMeta').innerHTML =
     'Agent ' + suFmt(u.assigned_agent === null || u.assigned_agent === '' ? 'Unassigned' : u.assigned_agent) +
     ' · ' + suFmt(u.city) + ' · Registered ' + suFmtDateTime(u.create_time).slice(0, 10) + activePill;
-  document.getElementById('suHeaderBalance').textContent = suFmtInr(u.user_balance);
+  document.getElementById('suHeaderBalance').textContent = suFmtInrDecimal(u.user_balance);
   document.getElementById('suHeaderVip').textContent = 'VIP ' + u.vip_level;
 }
 
 function suRenderFinancials(u, last7) {
   document.getElementById('suFinLifetime').innerHTML = [
     suFinItem('Total Deposit', suFmtInr(u.total_deposit)),
-    suFinItem('Deposit Count', suFmt(u.deposit_txn_count)),
+    suFinItem('Deposit Count', suFmt(u.deposit_count)),
     suFinItem('Total Withdraw', suFmtInr(u.total_withdrawal)),
-    suFinItem('Wallet Balance', suFmtInr(u.user_balance)),
+    suFinItem('Wallet Balance', suFmtInrDecimal(u.user_balance)),
     suFinItem('Net Lifetime (Deposit − Withdraw)', suFmtInr((u.total_deposit || 0) - (u.total_withdrawal || 0))),
   ].join('');
   document.getElementById('suFinLast7').innerHTML = [

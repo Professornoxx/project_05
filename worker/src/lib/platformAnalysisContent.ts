@@ -206,6 +206,9 @@ export const PLATFORM_ANALYSIS_CONTENT_HTML = `
 const paState = { profit: { page: 1, newOnly: false }, suspicious: { page: 1 } };
 
 function paFmtInr(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
+// Wallet balance carries real paise (e.g. 0.10) — whole-rupee rounding made
+// any sub-₹1 balance render as a flat "₹0", indistinguishable from empty.
+function paFmtInrDecimal(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function paFmtSigned(n) {
   const v = Number(n || 0);
   const cls = v > 0 ? 'pa-pos' : v < 0 ? 'pa-neg' : '';
@@ -229,7 +232,7 @@ async function paLoadProfit() {
 
     document.querySelector('#paProfitTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.vip +
-      '</td><td>' + paFmtInr(r.dep_today) + '</td><td>' + paFmtInr(r.wallet_bal) +
+      '</td><td>' + paFmtInr(r.dep_today) + '</td><td>' + paFmtInrDecimal(r.wallet_bal) +
       '</td><td>' + paFmtInr(r.wd_today) + '</td><td>' + paFmtSigned(r.net_dep) +
       '</td><td>' + paFmtLastActivity(r.last_dep) + '</td><td>' + paFmtLastActivity(r.last_wd) + '</td></tr>'
     ).join('') || '<tr><td colspan="9">No data</td></tr>';

@@ -73,6 +73,9 @@ export const INACTIVE_USERS_CONTENT_HTML = `
 const iuState = { low: { page: 1 }, high: { page: 1 } };
 
 function iuFmtInr(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
+// Wallet balance carries real paise (e.g. 0.10) — whole-rupee rounding made
+// any sub-₹1 balance render as a flat "₹0", indistinguishable from empty.
+function iuFmtInrDecimal(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 function iuFmtNum(n) { return Number(n || 0).toLocaleString('en-IN'); }
 
 async function iuLoadTier(tier) {
@@ -87,7 +90,7 @@ async function iuLoadTier(tier) {
     document.getElementById(prefix + 'Total').textContent = iuFmtNum(d.total);
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.current_level +
-      '</td><td>' + iuFmtInr(r.total_deposit) + '</td><td>' + iuFmtInr(r.user_balance) +
+      '</td><td>' + iuFmtInr(r.total_deposit) + '</td><td>' + iuFmtInrDecimal(r.user_balance) +
       '</td><td>' + iuFmtNum(r.inactive_days) + '</td><td>' + r.last_active_date + '</td></tr>'
     ).join('') || '<tr><td colspan="7">No data</td></tr>';
 
