@@ -146,7 +146,7 @@ export default {
         dashboardRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_AMOUNT_RANGE_CARDS
           : dashboardRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : dashboardRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "performance"
@@ -355,6 +355,83 @@ export default {
       const total = countRow?.c ?? 0;
       return Response.json({
         date: yesterdayStr,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // FTD panel 2: No-Return First Deposit Users — same is_first_deposit
+    // marker as the panel above, but the opposite cohort window (2-5 days
+    // ago instead of yesterday, giving a return deposit a real chance to
+    // have happened) and the opposite condition: flagged if that user's
+    // FIRST deposit is still their ONLY completed deposit in the tracked
+    // window — no COMPLETE deposit after it. "Total Deposit" here is
+    // therefore just that one first-deposit amount (there's nothing else
+    // to sum); "Withdraw" is whatever they've withdrawn since, if
+    // anything, which is possible even with zero repeat deposits.
+    if (url.pathname === "/api/dashboard/action-center/no-return-first-deposits" && request.method === "GET") {
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const windowStart = new Date(anchorDate + "T00:00:00Z");
+      windowStart.setUTCDate(windowStart.getUTCDate() - 5);
+      const windowStartStr = windowStart.toISOString().slice(0, 10);
+      const windowEnd = new Date(anchorDate + "T00:00:00Z");
+      windowEnd.setUTCDate(windowEnd.getUTCDate() - 2);
+      const windowEndStr = windowEnd.toISOString().slice(0, 10);
+
+      const CTE = `WITH first_deposits AS (
+          SELECT user_id, MIN(create_time) as fd_time, date(MIN(create_time)) as fd_date, amount as fd_amount
+          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
+            AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
+            AND (? IS NULL OR user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?))
+          GROUP BY user_id
+        ),
+        later_deposits AS (
+          SELECT DISTINCT d.user_id FROM deposits d
+          JOIN first_deposits f ON f.user_id = d.user_id
+          WHERE d.status = 'COMPLETE' AND d.create_time > f.fd_time
+        ),
+        no_return AS (
+          SELECT f.user_id, f.fd_date, f.fd_amount FROM first_deposits f
+          WHERE f.user_id NOT IN (SELECT user_id FROM later_deposits)
+        ),
+        withdraw_agg AS (
+          SELECT user_id, COALESCE(SUM(amount),0) as total_withdrawal
+          FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IN (SELECT user_id FROM no_return)
+          GROUP BY user_id
+        )`;
+      const cteArgs = [windowStartStr, windowEndStr, agentFilter, agentFilter];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM no_return`)
+        .bind(...cteArgs)
+        .first<{ c: number }>();
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT n.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent, n.fd_date,
+                  n.fd_amount as total_deposit, COALESCE(w.total_withdrawal, 0) as total_withdrawal
+           FROM no_return n
+           LEFT JOIN users u ON u.user_id = n.user_id
+           LEFT JOIN withdraw_agg w ON w.user_id = n.user_id
+           ORDER BY n.fd_date DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
+
+      const total = countRow?.c ?? 0;
+      return Response.json({
+        windowStart: windowStartStr,
+        windowEnd: windowEndStr,
         page,
         pageSize,
         total,
@@ -2664,7 +2741,7 @@ export default {
         agentRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_AMOUNT_RANGE_CARDS
           : agentRoute.key === "action-center"
-          ? ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + NEW_USERS_BONUSES_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
           : agentRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : agentRoute.key === "performance"
