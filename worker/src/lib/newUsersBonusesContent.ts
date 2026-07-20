@@ -106,7 +106,7 @@ function nuFmtNum(n) { return Number(n || 0).toLocaleString('en-IN'); }
 function nuFmtDate(iso) {
   if (!iso) return '—';
   const [y, m, d] = iso.split('-').map(Number);
-  const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
   return d + '-' + monthName;
 }
 function nuSyncPageSelect(select, page, totalPages) {
