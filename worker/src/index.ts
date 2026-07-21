@@ -306,16 +306,24 @@ export default {
 
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
-      const anchorDate = url.searchParams.get("date") || todayIST();
-      const yesterday = new Date(anchorDate + "T00:00:00Z");
-      yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-      const yesterdayStr = yesterday.toISOString().slice(0, 10);
+      // Optional from/to range (page-level date filter, FTD card only) —
+      // defaults to yesterday-only to preserve the original behavior when
+      // no range is picked.
+      let fromStr = url.searchParams.get("from") || "";
+      let toStr = url.searchParams.get("to") || "";
+      if (!fromStr || !toStr) {
+        const anchorDate = url.searchParams.get("date") || todayIST();
+        const yesterday = new Date(anchorDate + "T00:00:00Z");
+        yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+        fromStr = toStr = yesterday.toISOString().slice(0, 10);
+      }
+      if (fromStr > toStr) { const t = fromStr; fromStr = toStr; toStr = t; }
 
       const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
       const CTE = `WITH first_deposit_users AS (
           SELECT user_id, MIN(region) as region
-          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) = ? AND user_id IS NOT NULL
+          FROM deposits WHERE is_first_deposit = 1 AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
             AND user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
             AND (? IS NULL OR user_id IN (SELECT user_id FROM users WHERE assigned_agent = ?))
           GROUP BY user_id
@@ -333,7 +341,7 @@ export default {
 
       const countRow = await env.daily_records_db
         .prepare(`${CTE} SELECT COUNT(*) as c FROM first_deposit_users`)
-        .bind(yesterdayStr, agentFilter, agentFilter)
+        .bind(fromStr, toStr, agentFilter, agentFilter)
         .first<{ c: number }>();
 
       const rows = await env.daily_records_db
@@ -352,12 +360,14 @@ export default {
            LEFT JOIN users u ON u.user_id = f.user_id
            ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
         )
-        .bind(yesterdayStr, agentFilter, agentFilter, pageSize, (page - 1) * pageSize)
+        .bind(fromStr, toStr, agentFilter, agentFilter, pageSize, (page - 1) * pageSize)
         .all();
 
       const total = countRow?.c ?? 0;
       return Response.json({
-        date: yesterdayStr,
+        date: fromStr,
+        dateFrom: fromStr,
+        dateTo: toStr,
         page,
         pageSize,
         total,
