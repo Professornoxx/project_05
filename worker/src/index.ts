@@ -12,6 +12,7 @@ import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
 import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
 import { ACTIVE_USERS_CONTENT_HTML } from "./lib/activeUsersContent";
+import { WEEKLY_CASHBACK_SHIELD_CONTENT_HTML } from "./lib/weeklyCashbackShieldContent";
 import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
@@ -148,7 +149,7 @@ export default {
         dashboardRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_AMOUNT_RANGE_CARDS
           : dashboardRoute.key === "action-center"
-          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + WEEKLY_CASHBACK_SHIELD_CONTENT_HTML
           : dashboardRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "performance"
@@ -491,6 +492,114 @@ export default {
         pageSize,
         total,
         totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // Action Center (last section): Weekly Cashback Shield. Eligibility
+    // and payout formula reverse-engineered from a reference design's own
+    // numbers and confirmed against its caption text (VIP 2+ only; a flat-
+    // rate tier for small losses; a scaled tier for larger ones) — no
+    // other spec exists for this. Current Monday-Sunday week, however many
+    // days have elapsed (same "pace so far" convention as Weekly
+    // Performance — you can't compute deposits for days that haven't
+    // happened yet).
+    //
+    // verified_loss = week's deposits - week's withdrawals - CURRENT
+    // wallet balance (users.user_balance, a point-in-time snapshot, not
+    // week-scoped — there's no historical balance table). loss_pct =
+    // verified_loss / week_deposit. Two eligibility tiers, everything else
+    // is not eligible (no row):
+    //   - verified_loss in [500, 4999] AND loss_pct >= 80% -> flat 1.5%
+    //   - verified_loss in [5000, 2,500,000] AND loss_pct >= 50% -> scaled:
+    //     VIP 2-4 linearly interpolates 2.00%->4.00% as loss_pct goes
+    //     50%->100% (capped at 4.00% above 100%); VIP 5-15 interpolates
+    //     1.51%->5.00% the same way (capped at 5.00%).
+    // bonus_amount = verified_loss * eligible_pct.
+    if (url.pathname === "/api/dashboard/action-center/weekly-cashback-shield" && request.method === "GET") {
+      const scope = await requireDashboardOrAgentScope(request, env);
+      if (scope instanceof Response) return scope;
+      const { agentFilter } = scope;
+
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const weekStartDate = new Date(anchorDate + "T00:00:00Z");
+      const dow = weekStartDate.getUTCDay(); // 0=Sun..6=Sat
+      weekStartDate.setUTCDate(weekStartDate.getUTCDate() - ((dow + 6) % 7));
+      const weekStart = weekStartDate.toISOString().slice(0, 10);
+      const weekEndDate = new Date(weekStart + "T00:00:00Z");
+      weekEndDate.setUTCDate(weekEndDate.getUTCDate() + 6);
+      const weekEnd = weekEndDate.toISOString().slice(0, 10);
+
+      const VIP_LEVEL = vipLevelCase("u.total_deposit");
+      const CTE = `WITH week_dep AS (
+          SELECT user_id, SUM(amount) as week_deposit FROM deposits
+          WHERE status = 'COMPLETE' AND user_id IS NOT NULL AND date(create_time) BETWEEN ? AND ?
+          GROUP BY user_id
+        ),
+        week_wd AS (
+          SELECT user_id, SUM(amount) as week_withdraw FROM withdrawals
+          WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL AND date(create_time) BETWEEN ? AND ?
+          GROUP BY user_id
+        ),
+        candidates AS (
+          SELECT wd.user_id, wd.week_deposit, COALESCE(ww.week_withdraw, 0) as week_withdraw,
+                 COALESCE(u.user_balance, 0) as user_balance, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                 ${VIP_LEVEL} as vip_level,
+                 (wd.week_deposit - COALESCE(ww.week_withdraw, 0) - COALESCE(u.user_balance, 0)) as verified_loss
+          FROM week_dep wd
+          LEFT JOIN week_wd ww ON ww.user_id = wd.user_id
+          LEFT JOIN users u ON u.user_id = wd.user_id
+          WHERE COALESCE(u.is_banned, 0) = 0 AND (? IS NULL OR u.assigned_agent = ?)
+        ),
+        scored AS (
+          SELECT *, (100.0 * verified_loss / week_deposit) as loss_pct
+          FROM candidates WHERE vip_level >= 2 AND verified_loss > 0 AND week_deposit > 0
+        ),
+        eligible AS (
+          SELECT *,
+            CASE
+              WHEN verified_loss BETWEEN 500 AND 4999 AND loss_pct >= 80 THEN 1.5
+              WHEN verified_loss BETWEEN 5000 AND 2500000 AND loss_pct >= 50 AND vip_level BETWEEN 2 AND 4
+                THEN MIN(4.0, 2.0 + (MIN(loss_pct, 100) - 50) / 50.0 * 2.0)
+              WHEN verified_loss BETWEEN 5000 AND 2500000 AND loss_pct >= 50 AND vip_level >= 5
+                THEN MIN(5.0, 1.51 + (MIN(loss_pct, 100) - 50) / 50.0 * 3.49)
+              ELSE NULL
+            END as eligible_pct
+          FROM scored
+        ),
+        final AS (
+          SELECT *, verified_loss * eligible_pct / 100.0 as bonus_amount
+          FROM eligible WHERE eligible_pct IS NOT NULL
+        )`;
+      const cteArgs = [weekStart, weekEnd, weekStart, weekEnd, agentFilter, agentFilter];
+
+      const summaryRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c, COALESCE(SUM(bonus_amount), 0) as total_bonus FROM final`)
+        .bind(...cteArgs)
+        .first<{ c: number; total_bonus: number }>();
+      const total = summaryRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT user_id, agent, vip_level, week_deposit as total_deposit, week_withdraw as total_withdrawal,
+                  user_balance, verified_loss, loss_pct, eligible_pct, bonus_amount
+           FROM final ORDER BY bonus_amount DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        date: anchorDate,
+        weekStart,
+        weekEnd,
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        totalBonusPayable: summaryRow?.total_bonus ?? 0,
         rows: rows.results,
       });
     }
@@ -3055,7 +3164,7 @@ export default {
         agentRoute.key === "home"
           ? HOME_CONTENT_HTML + DEPOSIT_ANALYSIS_CONTENT_HTML + DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML + WITHDRAWAL_ANALYSIS_CONTENT_HTML + HOME_AMOUNT_RANGE_CARDS
           : agentRoute.key === "action-center"
-          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML
+          ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + WEEKLY_CASHBACK_SHIELD_CONTENT_HTML
           : agentRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : agentRoute.key === "performance"
