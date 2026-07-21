@@ -17,7 +17,7 @@ import { ANALYTICS_CONTENT_HTML } from "./lib/analyticsContent";
 import { REACTIVATION_CONTENT_HTML } from "./lib/reactivationContent";
 import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
-import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
+import { PERFORMANCE_CONTENT_HTML, DAILY_RANGE_PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { WEEKLY_PERFORMANCE_CONTENT_HTML } from "./lib/weeklyPerformanceContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
@@ -153,7 +153,7 @@ export default {
           : dashboardRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML
+          ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
           ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD + REGION_VIP_MATRIX_CONTENT_HTML
           : dashboardRoute.key === "search-user"
@@ -3237,7 +3237,7 @@ export default {
           : agentRoute.key === "analytics"
           ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
           : agentRoute.key === "performance"
-          ? PERFORMANCE_CONTENT_HTML
+          ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : agentRoute.key === "search-user"
           ? AGENT_SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
