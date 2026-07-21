@@ -7,6 +7,7 @@ import { HOME_CONTENT_HTML } from "./lib/homeContent";
 import { DEPOSIT_ANALYSIS_CONTENT_HTML } from "./lib/depositAnalysisContent";
 import { DEPOSIT_HOURLY_ANALYSIS_CONTENT_HTML } from "./lib/depositHourlyAnalysisContent";
 import { WITHDRAWAL_ANALYSIS_CONTENT_HTML } from "./lib/withdrawalAnalysisContent";
+import { REGION_VIP_MATRIX_CONTENT_HTML } from "./lib/regionVipMatrixContent";
 import { ACTION_CENTER_CONTENT_HTML } from "./lib/actionCenterContent";
 import { INACTIVE_USERS_CONTENT_HTML } from "./lib/inactiveUsersContent";
 import { NEW_USERS_BONUSES_CONTENT_HTML } from "./lib/newUsersBonusesContent";
@@ -153,7 +154,7 @@ export default {
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
-          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD
+          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD + REGION_VIP_MATRIX_CONTENT_HTML
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
