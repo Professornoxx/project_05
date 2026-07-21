@@ -17,6 +17,7 @@ import { VIP_UPGRADE_CONTENT_HTML } from "./lib/vipUpgradeContent";
 import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
+import { WEEKLY_PERFORMANCE_CONTENT_HTML } from "./lib/weeklyPerformanceContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import {
   HOME_AMOUNT_RANGE_CARDS,
@@ -152,7 +153,7 @@ export default {
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
-          ? PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD
+          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
