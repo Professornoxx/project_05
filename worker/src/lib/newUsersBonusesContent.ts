@@ -2,8 +2,13 @@
 // provided reference design (count badge next to each card title, icon in
 // a light circle, page-number dropdown alongside Prev/Next). Section
 // header renamed from "New Users & Bonuses" to "FTD" per the reference.
-//   Panel 1: Yesterday First Deposit Users — data from
-//     /api/dashboard/action-center/yesterday-first-deposits.
+//   Panel 1: First Deposit Users — data from
+//     /api/dashboard/action-center/yesterday-first-deposits, now driven by
+//     a page-level From/To date-range picker (defaults to yesterday when
+//     no range is chosen, preserving the original behavior). This filter
+//     is scoped to this panel only — Panel 2 and the other Action Center
+//     sections keep their own fixed relative-to-today windows, since those
+//     don't cleanly map onto an arbitrary range.
 //   Panel 2: No-Return First Deposit Users — data from
 //     /api/dashboard/action-center/no-return-first-deposits (see that
 //     endpoint's comment in index.ts for the cohort/no-return definition).
@@ -36,11 +41,39 @@ export const NEW_USERS_BONUSES_CONTENT_HTML = `
   .nu-pager button { border: 1px solid #ddd; background: #fff; border-radius: 16px; padding: 5px 14px; font-size: 12px; cursor: pointer; }
   .nu-pager button:disabled { opacity: 0.4; cursor: default; }
   .nu-page-select { border: 1px solid #ddd; background: #fff; border-radius: 16px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+
+  .nu-range-wrap { position: relative; }
+  .nu-range-badge { display: flex; align-items: center; gap: 6px; border: 1px solid #ddd; background: #fff; color: #333; border-radius: 20px; padding: 8px 16px; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .nu-range-popup { display: none; position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); padding: 16px; width: 260px; }
+  .nu-range-popup.open { display: block; }
+  .nu-range-fields { display: flex; gap: 10px; margin-bottom: 14px; }
+  .nu-range-field { flex: 1; }
+  .nu-range-field label { display: block; font-size: 10px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 5px; }
+  .nu-range-field input[type="date"] { width: 100%; border: 1px solid #ddd; border-radius: 8px; padding: 7px 8px; font-size: 12.5px; box-sizing: border-box; }
+  .nu-range-apply { width: 100%; background: #4338ca; color: #fff; border: none; border-radius: 8px; padding: 9px; font-size: 13px; font-weight: 700; cursor: pointer; }
 </style>
 
 <div class="nu-header">
   <div class="nu-title">FTD</div>
-  <div class="nu-tag">ACTION CENTER</div>
+  <div style="display:flex; align-items:center; gap:10px;">
+    <div class="nu-range-wrap">
+      <button class="nu-range-badge" id="nuRangeBadge">📅 Loading…</button>
+      <div class="nu-range-popup" id="nuRangePopup">
+        <div class="nu-range-fields">
+          <div class="nu-range-field">
+            <label>From</label>
+            <input type="date" id="nuRangeFrom" />
+          </div>
+          <div class="nu-range-field">
+            <label>To</label>
+            <input type="date" id="nuRangeTo" />
+          </div>
+        </div>
+        <button class="nu-range-apply" id="nuRangeApplyBtn">Apply</button>
+      </div>
+    </div>
+    <div class="nu-tag">ACTION CENTER</div>
+  </div>
 </div>
 
 <div class="nu-grid">
@@ -48,7 +81,7 @@ export const NEW_USERS_BONUSES_CONTENT_HTML = `
     <div class="nu-panel-head">
       <div class="nu-panel-title-group">
         <div class="nu-panel-icon">🎉</div>
-        <div class="nu-panel-title">Yesterday First Deposit Users</div>
+        <div class="nu-panel-title">First Deposit Users</div>
         <span class="nu-count-badge" id="nuCountBadge">—</span>
       </div>
       <button class="nu-excel-btn" id="exportNuBtn">📥 Excel</button>
@@ -98,7 +131,7 @@ export const NEW_USERS_BONUSES_CONTENT_HTML = `
 <div id="nuStatus" style="font-size:13px;color:#888;"></div>
 
 <script>
-const nuState = { page: 1 };
+const nuState = { page: 1, from: '', to: '' };
 const nrState = { page: 1 };
 
 function nuFmtInr(n) { return '₹' + Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 }); }
@@ -109,6 +142,9 @@ function nuFmtDate(iso) {
   const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
   return d + '-' + monthName;
 }
+function nuFmtRangeBadge(from, to) {
+  return from === to ? ('📅 ' + nuFmtDate(from)) : ('📅 ' + nuFmtDate(from) + ' – ' + nuFmtDate(to));
+}
 function nuSyncPageSelect(select, page, totalPages) {
   if (select.dataset.totalPages !== String(totalPages)) {
     select.dataset.totalPages = String(totalPages);
@@ -118,12 +154,26 @@ function nuSyncPageSelect(select, page, totalPages) {
   select.value = String(page);
 }
 
+function nuBuildUrl(page) {
+  const params = new URLSearchParams({ page: String(page) });
+  if (nuState.from && nuState.to) { params.set('from', nuState.from); params.set('to', nuState.to); }
+  return '/api/dashboard/action-center/yesterday-first-deposits?' + params.toString();
+}
+
 async function nuLoad() {
   const statusEl = document.getElementById('nuStatus');
   try {
-    const res = await fetch('/api/dashboard/action-center/yesterday-first-deposits?page=' + nuState.page);
+    const res = await fetch(nuBuildUrl(nuState.page));
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
+
+    if (!nuState.from || !nuState.to) {
+      nuState.from = d.dateFrom;
+      nuState.to = d.dateTo;
+      document.getElementById('nuRangeFrom').value = d.dateFrom;
+      document.getElementById('nuRangeTo').value = d.dateTo;
+    }
+    document.getElementById('nuRangeBadge').textContent = nuFmtRangeBadge(d.dateFrom, d.dateTo);
 
     document.getElementById('nuTotal').textContent = nuFmtNum(d.total);
     document.getElementById('nuCountBadge').textContent = nuFmtNum(d.total);
@@ -140,11 +190,29 @@ async function nuLoad() {
     document.getElementById('nuNext').disabled = d.page >= d.totalPages;
     nuSyncPageSelect(document.getElementById('nuPageSelect'), d.page, d.totalPages);
 
-    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — showing ' + d.date;
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — showing ' + d.dateFrom + ' to ' + d.dateTo;
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
   }
 }
+
+document.getElementById('nuRangeBadge').onclick = () => {
+  document.getElementById('nuRangePopup').classList.toggle('open');
+};
+document.addEventListener('click', (e) => {
+  const wrap = document.querySelector('.nu-range-wrap');
+  if (wrap && !wrap.contains(e.target)) document.getElementById('nuRangePopup').classList.remove('open');
+});
+document.getElementById('nuRangeApplyBtn').onclick = () => {
+  const from = document.getElementById('nuRangeFrom').value;
+  const to = document.getElementById('nuRangeTo').value;
+  if (!from || !to) return;
+  nuState.from = from;
+  nuState.to = to;
+  nuState.page = 1;
+  document.getElementById('nuRangePopup').classList.remove('open');
+  nuLoad();
+};
 
 async function nrLoad() {
   const statusEl = document.getElementById('nuStatus');
@@ -185,10 +253,10 @@ document.getElementById('nrPageSelect').onchange = (e) => { nrState.page = Numbe
 const NU_EXPORT_HEADER = ['User ID', 'Agent', 'Current VIP Level', 'Deposit Count', 'Total Deposit', 'Total Withdrawal', 'Profit/Loss', 'Region'];
 function nuCsvField(v) { return '"' + String(v ?? '').replace(/"/g, '""') + '"'; }
 async function nuFetchAllRows() {
-  const first = await fetch('/api/dashboard/action-center/yesterday-first-deposits?page=1').then((r) => r.json());
+  const first = await fetch(nuBuildUrl(1)).then((r) => r.json());
   let rows = first.rows || [];
   for (let page = 2; page <= (first.totalPages || 1); page++) {
-    const d = await fetch('/api/dashboard/action-center/yesterday-first-deposits?page=' + page).then((r) => r.json());
+    const d = await fetch(nuBuildUrl(page)).then((r) => r.json());
     rows = rows.concat(d.rows || []);
   }
   return rows;
