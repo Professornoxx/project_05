@@ -33,6 +33,8 @@ export const REGION_VIP_MATRIX_CONTENT_HTML = `
   table.rv-table tbody tr:nth-child(even) td { background: #fafafa; }
   table.rv-table tbody tr:nth-child(even) td:first-child { background: #fafafa; }
   table.rv-table td:last-child, table.rv-table th:last-child { font-weight: 700; }
+  table.rv-table tr.rv-total-row td { font-weight: 700; color: #1f2430; border-top: 2px solid #e5e7eb; background: #fff; position: sticky; bottom: 0; }
+  table.rv-table tr.rv-total-row td:first-child { background: #fff; }
 </style>
 
 <div class="rv-header">
@@ -125,9 +127,23 @@ async function rvLoad() {
     const d = await res.json();
     if (!res.ok) throw new Error(d.error || res.statusText);
 
-    document.getElementById('rvTableBody').innerHTML = (d.regions || []).map((r) =>
+    const regions = d.regions || [];
+    const rowsHtml = regions.map((r) =>
       '<tr><td>' + r.region + '</td>' + r.levels.map((v) => '<td>' + v + '</td>').join('') + '<td>' + r.total + '</td></tr>'
-    ).join('') || '<tr><td colspan="12">No data</td></tr>';
+    ).join('');
+
+    let totalRowHtml = '';
+    if (regions.length > 0) {
+      const colSums = new Array(10).fill(0);
+      let grandTotal = 0;
+      regions.forEach((r) => {
+        r.levels.forEach((v, i) => { colSums[i] += v; });
+        grandTotal += r.total;
+      });
+      totalRowHtml = '<tr class="rv-total-row"><td>Total</td>' + colSums.map((v) => '<td>' + v + '</td>').join('') + '<td>' + grandTotal + '</td></tr>';
+    }
+
+    document.getElementById('rvTableBody').innerHTML = (rowsHtml + totalRowHtml) || '<tr><td colspan="12">No data</td></tr>';
 
     const rangeText = d.range.start === d.range.end ? rvFmtDateLabel(d.range.start) : rvFmtDateLabel(d.range.start) + ' to ' + rvFmtDateLabel(d.range.end);
     statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — showing ' + rangeText;
