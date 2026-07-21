@@ -1,8 +1,9 @@
-// Dashboard (Home page) section, last on the page: Region vs VIP Depositor
+// Platform Analysis section, last on the page: Region vs VIP Depositor
 // Matrix. UI-only per explicit instruction: static/mock data matching the
 // provided reference design exactly (layout, spacing, colors, filters,
 // scrollable table). No backend endpoint yet — wiring to real data is a
-// deliberate follow-up, not done here.
+// deliberate follow-up, not done here. Originally placed on the Home page,
+// moved here per follow-up request.
 export const REGION_VIP_MATRIX_CONTENT_HTML = `
 <style>
   .rv-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 14px; }
