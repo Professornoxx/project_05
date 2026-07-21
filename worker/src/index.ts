@@ -1914,6 +1914,105 @@ export default {
         { name: "General", icon: "📊", agents: generalTeam },
       ];
 
+      // Daily / Range Performance section (below Monthly Leaderboard, its
+      // own date/range control — reuses rangeKPIs, already computed above
+      // for dailyTable, so no extra DB round trip for 3 of the 4 cards).
+      // Deliberately a DIFFERENT department-to-KPI mapping than the
+      // Monthly section above, per the two separate reference images
+      // given for each (flagged in performanceContent.ts's comment,
+      // confirmed 2026-07-21 to keep as two genuinely different
+      // breakdowns rather than reconciling them):
+      //   - Reactivation Team: Reactivation Low + High (same as Monthly)
+      //   - VIP Team (here): Premium Active Low + High
+      //   - General (here): VIP Upgrade Low + High
+      //   - FTD Team (here): Retention + "FD 2-5 Days Conversion" (new —
+      //     see below)
+      // Every agent is included (not just top 3) — the reference design's
+      // cards are scrollable ranked lists, not a leaderboard-style podium.
+      const fmtRatio = (r: Ratio) => r.den > 0 ? `${r.num}/${r.den} (${((r.num / r.den) * 100).toFixed(1)}%)` : null;
+      const ratioToPct = (r: Ratio): number | null => (r.den > 0 ? (r.num / r.den) * 100 : null);
+
+      const rangeScoreEntries = agentNames.map((agent) => {
+        const kpis = rangeKPIs[agent] ?? {
+          reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
+          vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 }, premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
+        };
+        return { agent, kpis };
+      });
+
+      const drRankAll = (
+        m1Fn: (kpis: AgentKPIs) => Ratio, m2Fn: (kpis: AgentKPIs) => Ratio
+      ) =>
+        rangeScoreEntries
+          .map(({ agent, kpis }) => {
+            const r1 = m1Fn(kpis), r2 = m2Fn(kpis);
+            const p1 = ratioToPct(r1), p2 = ratioToPct(r2);
+            const score = avgOfPcts(p1, p2);
+            return { agent, m1: fmtRatio(r1), m1pct: p1, m2: fmtRatio(r2), m2pct: p2, score };
+          })
+          .filter((e): e is typeof e & { score: number } => e.score !== null)
+          .sort((a, b) => b.score - a.score)
+          .map((e, i) => ({ rank: i + 1, agent: e.agent, m1: e.m1, m1pct: e.m1pct, m2: e.m2, m2pct: e.m2pct, score: e.score }));
+
+      const drReactivationTeam = drRankAll((k) => k.reactivationLow, (k) => k.reactivationHigh);
+      const drVipTeam = drRankAll((k) => k.premiumActiveLow, (k) => k.premiumActiveHigh);
+      const drGeneralTeam = drRankAll((k) => k.vipUpgradeLow, (k) => k.vipUpgradeHigh);
+
+      // "FD 2-5 Days Conversion": genuinely new metric, no existing KPI
+      // covers it (per explicit confirmation, 2026-07-21) — the inverse of
+      // Action Center's "No-Return First Deposit Users" panel (same
+      // is_first_deposit cohort, same 2-5-days-ago window relative to
+      // anchorDate — NOT the range picker above, since "2-5 days ago" is
+      // always a fixed offset from a single date), just measuring the
+      // conversion (returned) rate instead of counting non-returners, and
+      // grouped by assigned_agent instead of listed per-user.
+      const fdWindowStart = (() => { const d = new Date(anchorDate + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 5); return d.toISOString().slice(0, 10); })();
+      const fdWindowEnd = (() => { const d = new Date(anchorDate + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - 2); return d.toISOString().slice(0, 10); })();
+      const fdConversionRows = await env.daily_records_db
+        .prepare(
+          `WITH first_deposits AS (
+             SELECT d.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent, MIN(d.create_time) as fd_time
+             FROM deposits d LEFT JOIN users u ON u.user_id = d.user_id
+             WHERE d.is_first_deposit = 1 AND d.user_id IS NOT NULL AND date(d.create_time) BETWEEN ? AND ?
+             GROUP BY d.user_id
+           ),
+           later_deposits AS (
+             SELECT DISTINCT dd.user_id FROM deposits dd
+             JOIN first_deposits fd ON fd.user_id = dd.user_id
+             WHERE dd.status = 'COMPLETE' AND dd.create_time > fd.fd_time
+           )
+           SELECT agent, COUNT(*) as cohort, SUM(CASE WHEN fd.user_id IN (SELECT user_id FROM later_deposits) THEN 1 ELSE 0 END) as returned
+           FROM first_deposits fd GROUP BY agent`
+        )
+        .bind(fdWindowStart, fdWindowEnd)
+        .all<{ agent: string; cohort: number; returned: number }>();
+      const fdConversionByAgent = new Map(fdConversionRows.results.map((r) => [r.agent, r]));
+
+      const drFtdTeam = rangeScoreEntries
+        .map(({ agent, kpis }) => {
+          const retentionPct = ratioToPct(kpis.retention);
+          const fd = fdConversionByAgent.get(agent);
+          const fdPct = fd && fd.cohort > 0 ? (100 * fd.returned) / fd.cohort : null;
+          const fdLabel = fd && fd.cohort > 0 ? `${fd.returned}/${fd.cohort} (${fdPct!.toFixed(1)}%)` : null;
+          const score = avgOfPcts(retentionPct, fdPct);
+          return { agent, m1: fmtRatio(kpis.retention), m1pct: retentionPct, m2: fdLabel, m2pct: fdPct, score };
+        })
+        .filter((e): e is typeof e & { score: number } => e.score !== null)
+        .sort((a, b) => b.score - a.score)
+        .map((e, i) => ({ rank: i + 1, agent: e.agent, m1: e.m1, m1pct: e.m1pct, m2: e.m2, m2pct: e.m2pct, score: e.score }));
+
+      const totalAgentsRow = await env.daily_records_db
+        .prepare(`SELECT COUNT(DISTINCT assigned_agent) as c FROM users WHERE assigned_agent IS NOT NULL AND assigned_agent != ''`)
+        .first<{ c: number }>();
+      const totalAgents = totalAgentsRow?.c ?? 0;
+
+      const dailyRangeDepartments = [
+        { name: "FTD Team", icon: "🎉", metricLabels: ["Retention", "FD 2-5 Days Conversion"], totalAgents, agents: drFtdTeam },
+        { name: "VIP Team", icon: "💎", metricLabels: ["Low Premium Active", "High Premium Active"], totalAgents, agents: drVipTeam },
+        { name: "Reactivation Team", icon: "🔄", metricLabels: ["Reactivation Low", "Reactivation High"], totalAgents, agents: drReactivationTeam },
+        { name: "General", icon: "📊", metricLabels: ["Low VIP Upgrade", "High VIP Upgrade"], totalAgents, agents: drGeneralTeam },
+      ];
+
       return {
         date: anchorDate,
         range: rangeParam,
@@ -1923,6 +2022,7 @@ export default {
         dailyTable,
         monthlyLeaderboard,
         fullMonthlyRanking,
+        dailyRangeDepartments,
         departments,
       };
     }
