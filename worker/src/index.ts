@@ -2115,6 +2115,214 @@ export default {
       return Response.json({ date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results });
     }
 
+    // Platform Analysis section 0: Weekly Performance — This Week vs Last
+    // Week. Same New/Old user definition as the New vs Old User Analysis
+    // panel below (is_first_deposit=1 day = "new"), just rolled up from
+    // daily rows into two week buckets instead of shown per-day. "This
+    // week" = the current Monday-Sunday calendar week, however many days
+    // have elapsed so far (a pace read, not final until Sunday); "last
+    // week" = the most recent FULLY COMPLETE prior Monday-Sunday week.
+    // Every count/avg metric is itself a per-day figure averaged across
+    // the days in its bucket (elapsed days for this week, always 7 for
+    // last week) — matching the "(7d avg)" label in the UI. Zero-filled
+    // per day before averaging so a day with genuinely no deposits still
+    // counts as 0 in the average instead of silently shrinking the day
+    // count (same reasoning as the 7-day zero-fill in
+    // /api/dashboard/withdrawal-analysis's completedLast4Days).
+    //
+    // Target vs Actual: TARGETS below are hardcoded placeholder business
+    // targets — no target-setting table/UI exists yet, so these are not
+    // derived from anything in the database. Update them here directly
+    // until a real target source exists.
+    if (url.pathname === "/api/dashboard/platform-analysis/weekly-performance" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const TARGETS = {
+        oldUsersCount: 1800,
+        avgDepositOldUsers: 1900,
+        avgTotalDepositDay: 3900000,
+        totalDepositorCountDay: 1900,
+      };
+
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const mondayOf = (dateStr: string) => {
+        const d = new Date(dateStr + "T00:00:00Z");
+        const dow = d.getUTCDay(); // 0=Sun..6=Sat
+        d.setUTCDate(d.getUTCDate() - ((dow + 6) % 7));
+        return d.toISOString().slice(0, 10);
+      };
+      const addDays = (dateStr: string, n: number) => {
+        const d = new Date(dateStr + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+
+      const curWeekStart = mondayOf(anchorDate);
+      const lastWeekStart = addDays(curWeekStart, -7);
+      const lastWeekEnd = addDays(curWeekStart, -1);
+      const rangeStart = lastWeekStart;
+      const rangeEnd = anchorDate;
+
+      // Same per-day dep/wd CTEs as new-vs-old below, just bounded to the
+      // 2-week window and returned as one row per day instead of paginated.
+      const dailyRows = await env.daily_records_db
+        .prepare(
+          `WITH dep AS (
+             SELECT user_id, date(create_time) as d, amount, COALESCE(is_first_deposit, 0) as is_new
+             FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL AND date(create_time) BETWEEN ? AND ?
+           ),
+           dep_agg AS (
+             SELECT d,
+                    COUNT(DISTINCT CASE WHEN is_new = 0 THEN user_id END) as old_users,
+                    COALESCE(SUM(CASE WHEN is_new = 0 THEN amount END), 0) as old_total,
+                    COUNT(DISTINCT CASE WHEN is_new = 1 THEN user_id END) as new_users,
+                    COALESCE(SUM(CASE WHEN is_new = 1 THEN amount END), 0) as new_total,
+                    COUNT(DISTINCT user_id) as total_depositors,
+                    COALESCE(SUM(amount), 0) as total_deposit
+             FROM dep GROUP BY d
+           ),
+           first_dep AS (
+             SELECT user_id, MIN(date(create_time)) as first_dep_date
+             FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           wd AS (
+             SELECT w.user_id, date(w.create_time) as d, w.amount,
+                    CASE WHEN fd.first_dep_date = date(w.create_time) THEN 1 ELSE 0 END as is_new
+             FROM withdrawals w LEFT JOIN first_dep fd ON fd.user_id = w.user_id
+             WHERE CAST(w.status AS REAL) = 2 AND w.user_id IS NOT NULL AND date(w.create_time) BETWEEN ? AND ?
+           ),
+           wd_agg AS (
+             SELECT d,
+                    COUNT(DISTINCT CASE WHEN is_new = 0 THEN user_id END) as old_wd_users,
+                    COALESCE(SUM(CASE WHEN is_new = 0 THEN amount END), 0) as old_wd_total,
+                    COUNT(DISTINCT CASE WHEN is_new = 1 THEN user_id END) as new_wd_users,
+                    COALESCE(SUM(CASE WHEN is_new = 1 THEN amount END), 0) as new_wd_total
+             FROM wd GROUP BY d
+           )
+           SELECT da.d as date,
+                  da.old_users, da.old_total, da.new_users, da.new_total,
+                  COALESCE(wa.old_wd_users, 0) as old_wd_users, COALESCE(wa.old_wd_total, 0) as old_wd_total,
+                  COALESCE(wa.new_wd_users, 0) as new_wd_users, COALESCE(wa.new_wd_total, 0) as new_wd_total,
+                  da.total_deposit, da.total_depositors
+           FROM dep_agg da LEFT JOIN wd_agg wa ON wa.d = da.d`
+        )
+        .bind(rangeStart, rangeEnd, rangeStart, rangeEnd)
+        .all<{
+          date: string; old_users: number; old_total: number; new_users: number; new_total: number;
+          old_wd_users: number; old_wd_total: number; new_wd_users: number; new_wd_total: number;
+          total_deposit: number; total_depositors: number;
+        }>();
+
+      const byDate = new Map(dailyRows.results.map((r) => [r.date, r]));
+      const zeroRow = { old_users: 0, old_total: 0, new_users: 0, new_total: 0, old_wd_users: 0, old_wd_total: 0, new_wd_users: 0, new_wd_total: 0, total_deposit: 0, total_depositors: 0 };
+      const daysInclusive = (start: string, end: string) => {
+        const out: string[] = [];
+        for (let d = start; d <= end; d = addDays(d, 1)) out.push(d);
+        return out;
+      };
+      const curWeekDays = daysInclusive(curWeekStart, anchorDate);
+      const lastWeekDays = daysInclusive(lastWeekStart, lastWeekEnd);
+
+      const bucketAvg = (days: string[]) => {
+        const rows = days.map((d) => byDate.get(d) ?? zeroRow);
+        const n = days.length || 1;
+        const sum = (f: (r: typeof zeroRow) => number) => rows.reduce((acc, r) => acc + f(r), 0);
+        const avgOf = (totalField: (r: typeof zeroRow) => number, countField: (r: typeof zeroRow) => number) => {
+          const totalSum = sum(totalField);
+          const countSum = sum(countField);
+          return countSum > 0 ? totalSum / countSum : 0;
+        };
+        return {
+          oldUsersCount: sum((r) => r.old_users) / n,
+          newUsersCount: sum((r) => r.new_users) / n,
+          avgDepositOld: avgOf((r) => r.old_total, (r) => r.old_users),
+          avgDepositNew: avgOf((r) => r.new_total, (r) => r.new_users),
+          oldWithdrawCount: sum((r) => r.old_wd_users) / n,
+          avgWithdrawOld: avgOf((r) => r.old_wd_total, (r) => r.old_wd_users),
+          newWithdrawCount: sum((r) => r.new_wd_users) / n,
+          avgWithdrawNew: avgOf((r) => r.new_wd_total, (r) => r.new_wd_users),
+          totalDepositDay: sum((r) => r.total_deposit) / n,
+          totalDepositorCountDay: sum((r) => r.total_depositors) / n,
+        };
+      };
+
+      const metricsCurrent = bucketAvg(curWeekDays);
+      const metricsLast = bucketAvg(lastWeekDays);
+
+      // 3-Day Retention, same cohort/withdrew/returned definition as
+      // new-user-retention below, bounded to the 2-week window and rolled
+      // up per week bucket instead of shown per-day. Only cohort days
+      // whose 3-day return window has FULLY elapsed (cohort_day + 3 <=
+      // anchorDate) are counted — a cohort from 1-2 days ago hasn't had
+      // its full window yet and would understate the true return rate.
+      const cohortRows = await env.daily_records_db
+        .prepare(
+          `WITH cohort AS (
+             SELECT user_id, date(create_time) as cohort_day FROM deposits
+             WHERE is_first_deposit = 1 AND user_id IS NOT NULL AND date(create_time) BETWEEN ? AND ?
+           ),
+           withdrew AS (
+             SELECT DISTINCT user_id FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL
+           ),
+           return_dep AS (
+             SELECT DISTINCT user_id, date(create_time) as dep_day FROM deposits
+             WHERE status = 'COMPLETE' AND user_id IS NOT NULL
+           ),
+           returned AS (
+             SELECT c.cohort_day, c.user_id
+             FROM cohort c
+             JOIN return_dep r ON r.user_id = c.user_id
+               AND date(r.dep_day) > c.cohort_day AND date(r.dep_day) <= date(c.cohort_day, '+3 day')
+             GROUP BY c.cohort_day, c.user_id
+           )
+           SELECT c.cohort_day as date,
+                  COUNT(DISTINCT c.user_id) as new_users,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NOT NULL THEN c.user_id END) as withdrew_count,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NOT NULL AND ret.user_id IS NOT NULL THEN c.user_id END) as withdrew_returned,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NULL THEN c.user_id END) as never_withdrew_count,
+                  COUNT(DISTINCT CASE WHEN w.user_id IS NULL AND ret.user_id IS NOT NULL THEN c.user_id END) as never_withdrew_returned
+           FROM cohort c
+           LEFT JOIN withdrew w ON w.user_id = c.user_id
+           LEFT JOIN returned ret ON ret.cohort_day = c.cohort_day AND ret.user_id = c.user_id
+           GROUP BY c.cohort_day`
+        )
+        .bind(rangeStart, rangeEnd)
+        .all<{ date: string; new_users: number; withdrew_count: number; withdrew_returned: number; never_withdrew_count: number; never_withdrew_returned: number }>();
+
+      const cohortByDate = new Map(cohortRows.results.map((r) => [r.date, r]));
+      const fullyElapsed = (d: string) => addDays(d, 3) <= anchorDate;
+      const retentionBucket = (days: string[]) => {
+        const included = days.filter(fullyElapsed).map((d) => cohortByDate.get(d)).filter((r): r is NonNullable<typeof r> => !!r);
+        const cohortsIncluded = included.length;
+        const totalNewUsers = included.reduce((acc, r) => acc + r.new_users, 0);
+        const withdrewCount = included.reduce((acc, r) => acc + r.withdrew_count, 0);
+        const withdrewReturned = included.reduce((acc, r) => acc + r.withdrew_returned, 0);
+        const neverWithdrewCount = included.reduce((acc, r) => acc + r.never_withdrew_count, 0);
+        const neverWithdrewReturned = included.reduce((acc, r) => acc + r.never_withdrew_returned, 0);
+        return {
+          cohortsIncluded,
+          avgNewUsersPerCohort: cohortsIncluded > 0 ? totalNewUsers / cohortsIncluded : 0,
+          withdrewRedepositedPct: withdrewCount > 0 ? (100 * withdrewReturned) / withdrewCount : 0,
+          neverWithdrewRedepositedPct: neverWithdrewCount > 0 ? (100 * neverWithdrewReturned) / neverWithdrewCount : 0,
+        };
+      };
+
+      return Response.json({
+        date: anchorDate,
+        currentWeek: { start: curWeekStart, end: anchorDate, daysElapsed: curWeekDays.length },
+        lastWeek: { start: lastWeekStart, end: lastWeekEnd },
+        metrics: { current: metricsCurrent, last: metricsLast },
+        retention: { current: retentionBucket(curWeekDays), last: retentionBucket(lastWeekDays) },
+        targets: {
+          oldUsersCount: { target: TARGETS.oldUsersCount, actual: metricsCurrent.oldUsersCount },
+          avgDepositOldUsers: { target: TARGETS.avgDepositOldUsers, actual: metricsCurrent.avgDepositOld },
+          avgTotalDepositDay: { target: TARGETS.avgTotalDepositDay, actual: metricsCurrent.totalDepositDay },
+          totalDepositorCountDay: { target: TARGETS.totalDepositorCountDay, actual: metricsCurrent.totalDepositorCountDay },
+        },
+      });
+    }
+
     // Platform Analysis section 4, tab 1: New vs Old User Analysis — Daily
     // Breakdown. "New" = a user's is_first_deposit=1 day (deposits already
     // carries this flag); "Old" = any other deposit day for a user who has
