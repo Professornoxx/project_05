@@ -1835,17 +1835,84 @@ export default {
         })
         .sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
 
-      const monthlyLeaderboard = agentNames
-        .map((agent) => {
-          const kpis = monthKPIs[agent] ?? {
-            reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
-            vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 }, premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
-          };
-          const { pct } = scoreOf(kpis);
-          return { agent, score: pct };
-        })
+      const monthScoreEntries = agentNames.map((agent) => {
+        const kpis = monthKPIs[agent] ?? {
+          reactivationLow: { num: 0, den: 0 }, reactivationHigh: { num: 0, den: 0 }, retention: { num: 0, den: 0 },
+          vipUpgradeLow: { num: 0, den: 0 }, vipUpgradeHigh: { num: 0, den: 0 }, premiumActiveLow: { num: 0, den: 0 }, premiumActiveHigh: { num: 0, den: 0 },
+        };
+        const { pct, kpiPcts } = scoreOf(kpis);
+        return { agent, pct, kpiPcts };
+      });
+
+      const monthlyLeaderboard = monthScoreEntries
+        .map((e) => ({ agent: e.agent, score: e.pct }))
         .sort((a, b) => (b.score ?? -1) - (a.score ?? -1))
         .slice(0, 3);
+
+      // Overall Ranking (Performance page redesign): every agent with a
+      // valid month-to-date score, ranked — the old monthlyLeaderboard
+      // above only ever kept the top 3, which isn't enough for the
+      // reference design's Gold/Silver/Bronze-plus-ranked-list layout.
+      const fullMonthlyRanking = monthScoreEntries
+        .filter((e) => e.pct !== null)
+        .sort((a, b) => (b.pct as number) - (a.pct as number))
+        .map((e, i) => ({ rank: i + 1, agent: e.agent, pct: e.pct as number }));
+
+      // Department cards (Performance page redesign). Reactivation Team
+      // and VIP Team average their existing Low/High KPI pair's pct;
+      // General uses the one leftover KPI (Retention) with no other
+      // department. Per explicit confirmation (2026-07-21): agents with
+      // no valid pct for a department's KPI(s) are excluded from that
+      // department's ranking, same "excluded, not counted against them"
+      // rule the rest of this page already uses for a 0-denominator KPI.
+      const avgOfPcts = (...vals: (number | null)[]): number | null => {
+        const valid = vals.filter((v): v is number => v !== null);
+        return valid.length > 0 ? valid.reduce((s, v) => s + v, 0) / valid.length : null;
+      };
+      const deptTop3 = (scoreFn: (kpiPcts: Record<string, number | null>) => number | null) =>
+        monthScoreEntries
+          .map((e) => ({ agent: e.agent, pct: scoreFn(e.kpiPcts) }))
+          .filter((e): e is { agent: string; pct: number } => e.pct !== null)
+          .sort((a, b) => b.pct - a.pct)
+          .slice(0, 3);
+
+      const reactivationTeam = deptTop3((k) => avgOfPcts(k.reactivationLow, k.reactivationHigh));
+      const vipTeam = deptTop3((k) => avgOfPcts(k.vipUpgradeLow, k.vipUpgradeHigh));
+      const generalTeam = deptTop3((k) => k.retention);
+
+      // FTD Team: genuinely new metric, no existing KPI covers first-time
+      // deposits (per explicit confirmation, 2026-07-21) — built from the
+      // same is_first_deposit marker Action Center's "Yesterday First
+      // Deposit Users" panel uses, just counted per assigned_agent over
+      // the month-to-date range instead of a single day. TARGET_PER_DAY is
+      // an assumed placeholder (no target-setting source exists for FTD
+      // yet, same caveat as Weekly Performance's Target vs Actual
+      // section) — calibrate once a real target exists.
+      const FTD_TARGET_PER_DAY = 5;
+      const monthDays = Math.round(
+        (new Date(anchorDate + "T00:00:00Z").getTime() - new Date(monthStart + "T00:00:00Z").getTime()) / 86400000
+      ) + 1;
+      const ftdRows = await env.daily_records_db
+        .prepare(
+          `SELECT COALESCE(u.assigned_agent, 'Unassigned') as agent, COUNT(*) as c
+           FROM deposits d JOIN users u ON u.user_id = d.user_id
+           WHERE d.is_first_deposit = 1 AND d.user_id IS NOT NULL AND date(d.create_time) BETWEEN ? AND ?
+           GROUP BY agent`
+        )
+        .bind(monthStart, anchorDate)
+        .all<{ agent: string; c: number }>();
+      const ftdTeam = ftdRows.results
+        .filter((r) => r.agent !== "Unassigned")
+        .map((r) => ({ agent: r.agent, pct: (100 * r.c) / (FTD_TARGET_PER_DAY * monthDays) }))
+        .sort((a, b) => b.pct - a.pct)
+        .slice(0, 3);
+
+      const departments = [
+        { name: "FTD Team", icon: "🎯", agents: ftdTeam },
+        { name: "Reactivation Team", icon: "🔄", agents: reactivationTeam },
+        { name: "VIP Team", icon: "💎", agents: vipTeam },
+        { name: "General", icon: "📊", agents: generalTeam },
+      ];
 
       return {
         date: anchorDate,
@@ -1855,6 +1922,8 @@ export default {
         monthStart,
         dailyTable,
         monthlyLeaderboard,
+        fullMonthlyRanking,
+        departments,
       };
     }
 

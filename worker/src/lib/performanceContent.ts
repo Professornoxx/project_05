@@ -1,26 +1,13 @@
 // Performance page: redesigned to match the provided reference (Monthly
 // Leaderboard & Incentives, How Scoring Works panel, Incentive Brackets,
 // department-wise leaderboard cards, Overall Ranking with Gold/Silver/
-// Bronze + ranked list). UI-only per explicit instruction: static/mock
-// data, structured so a real endpoint can be swapped in later without
-// touching the render functions (PF_MOCK_DATA below stands in for that
-// future fetch response).
-//
-// IMPORTANT DATA-MODEL GAP, flagged for whoever wires this to real data:
-// the previous version of this page (still live at
-// /api/dashboard/performance) computes ONE overall score per agent
-// (7 KPIs averaged: reactivationLow/High, retention, vipUpgradeLow/High,
-// premiumActiveLow/High) — it has no concept of "departments" or of
-// ranking agents WITHIN a single KPI. This reference design's left column
-// (FTD Team / Reactivation Team / VIP Team / General, each independently
-// ranking its own top performers) asks a genuinely different question —
-// "who's best at Reactivation specifically" vs. "who's best overall" —
-// and doesn't map 1:1 onto the existing endpoint's response shape. The
-// Overall Ranking column on the right (average across all departments)
-// is much closer to what /api/dashboard/performance already returns
-// (monthlyLeaderboard), and could likely be wired up directly; the
-// department cards would need either a new endpoint (per-KPI ranking) or
-// a client-side reshape of dailyTable/kpiPcts into per-KPI leaderboards.
+// Bronze + ranked list). Live data from /api/dashboard/performance's
+// departments + fullMonthlyRanking fields (see that endpoint's comment in
+// index.ts for how each department is defined — Reactivation Team and VIP
+// Team average their existing Low/High KPI pair, General uses Retention,
+// FTD Team is a genuinely new metric with no prior KPI, all confirmed
+// 2026-07-21). Overall Ranking is every agent with a valid month-to-date
+// score, not just the top 3 the old monthlyLeaderboard field kept.
 export const PERFORMANCE_CONTENT_HTML = `
 <style>
   .pf-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -130,40 +117,7 @@ export const PERFORMANCE_CONTENT_HTML = `
 <div id="pfStatus" style="font-size:12.5px;color:#9ca3af;margin-top:12px;"></div>
 
 <script>
-// Stand-in for a future /api/dashboard/performance-v2 (or similar) response
-// shape — swap this object for a fetch() result and the render functions
-// below need no changes, per the data-model note at the top of this file.
-const PF_MOCK_DATA = {
-  monthRange: '1-July - 21-July',
-  departments: [
-    { name: 'FTD Team', icon: '🎯', agents: [
-      { name: 'Sahana (SL)', pct: 57.1 }, { name: 'Sathya (WFH)', pct: 57.1 }, { name: 'Rithika (WFH)', pct: 49.0 },
-    ]},
-    { name: 'Reactivation Team', icon: '🔄', agents: [
-      { name: 'Naira (WFH)', pct: 60.1 }, { name: 'Nisha (WFH)', pct: 50.5 }, { name: 'Sahana (SL)', pct: 31.7 },
-    ]},
-    { name: 'VIP Team', icon: '💎', agents: [
-      { name: 'Amar (WFH)', pct: 87.1 }, { name: 'Sahana (SL)', pct: 78.4 }, { name: 'Anitha (WFH)', pct: 76.0 },
-    ]},
-    { name: 'General', icon: '📊', agents: [
-      { name: 'Nisha (WFH)', pct: 16.9 }, { name: 'Naira (WFH)', pct: 15.6 }, { name: 'Sahana (SL)', pct: 12.2 },
-    ]},
-  ],
-  overallRanking: [
-    { rank: 1, name: 'Sahana (SL)', pct: 49.2 },
-    { rank: 2, name: 'Naira (WFH)', pct: 47.3 },
-    { rank: 3, name: 'Sathya (WFH)', pct: 46.1 },
-    { rank: 4, name: 'Nisha (WFH)', pct: 43.5 },
-    { rank: 5, name: 'Lakshmi (WFH)', pct: 42.5 },
-    { rank: 6, name: 'Rithika (WFH)', pct: 38.9 },
-    { rank: 7, name: 'Anitha (WFH)', pct: 38.8 },
-    { rank: 8, name: 'Reetu (WFH)', pct: 35.0 },
-    { rank: 9, name: 'Amar (WFH)', pct: 33.9 },
-    { rank: 10, name: 'Preethy (WFH)', pct: 32.0 },
-    { rank: 11, name: 'Muskhan (WFH)', pct: 31.3 },
-    { rank: 12, name: 'Shakshi (WFH)', pct: 25.8 },
-  ],
-};
+const pfState = { asOfDate: null }; // null = today ("This Month"); set = "Till Yesterday"
 
 function pfColorForPct(pct) { return pct >= 100 ? '#15803d' : pct >= 60 ? '#c2410c' : '#dc2626'; }
 function pfMedal(i) { return ['🥇', '🥈', '🥉'][i] || (i + 1) + 'th'; }
@@ -173,29 +127,34 @@ function pfTierNote(pct) {
   if (pct >= 60) return '60%+ of target';
   return 'Below 60% of target -- no incentive yet';
 }
+function pfFmtDateLabel(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  return d + '-' + monthName;
+}
 
 function pfRenderDepartments(departments) {
   document.getElementById('pfDeptColumn').innerHTML = departments.map((dept) =>
     '<div class="pf-dept-card">' +
       '<div class="pf-dept-title">' + dept.icon + ' ' + dept.name + '</div>' +
-      dept.agents.map((a, i) => {
+      (dept.agents.length > 0 ? dept.agents.map((a, i) => {
         const color = pfColorForPct(a.pct);
         return '<div class="pf-dept-row">' +
           '<div class="pf-dept-medal">' + pfMedal(i) + '</div>' +
           '<div class="pf-dept-body">' +
-            '<div class="pf-dept-name">' + a.name + '</div>' +
+            '<div class="pf-dept-name">' + a.agent + '</div>' +
             '<div class="pf-dept-bar-track"><div class="pf-dept-bar-fill" style="width:' + Math.min(100, a.pct) + '%;background:' + color + '"></div></div>' +
           '</div>' +
           '<div class="pf-dept-pct" style="color:' + color + '">' + a.pct.toFixed(1) + '%</div>' +
         '</div>';
-      }).join('') +
+      }).join('') : '<div style="font-size:12px;color:#9ca3af;">No qualifying agents yet</div>') +
     '</div>'
   ).join('');
 }
 
-function pfRenderRanking(overallRanking) {
-  const top3 = overallRanking.slice(0, 3);
-  const rest = overallRanking.slice(3);
+function pfRenderRanking(fullMonthlyRanking) {
+  const top3 = fullMonthlyRanking.slice(0, 3);
+  const rest = fullMonthlyRanking.slice(3);
   const tierClass = ['gold', 'silver', 'bronze'];
   const tierLabel = ['GOLD', 'SILVER', 'BRONZE'];
   const medal = ['🥇', '🥈', '🥉'];
@@ -206,43 +165,60 @@ function pfRenderRanking(overallRanking) {
         '<div class="pf-medal-icon">' + medal[i] + '</div>' +
         '<div>' +
           '<div class="pf-medal-rank-label">' + tierLabel[i] + '</div>' +
-          '<div class="pf-medal-name">' + r.name + '</div>' +
+          '<div class="pf-medal-name">' + r.agent + '</div>' +
           '<div class="pf-medal-sub">' + pfTierNote(r.pct) + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="pf-medal-pct">' + r.pct.toFixed(1) + '%<span>of target</span></div>' +
     '</div>'
-  ).join('');
+  ).join('') || '<div style="color:#888;font-size:13px;">No agents with a qualifying score yet this month.</div>';
 
   document.getElementById('pfRankList').innerHTML = rest.map((r, i) => {
     const isLast = i === rest.length - 1;
-    const rankLabel = isLast ? r.rank + (r.rank === 1 ? 'ST' : r.rank === 2 ? 'ND' : r.rank === 3 ? 'RD' : 'TH') + ' (LAST)' :
-      r.rank + (r.rank === 1 ? 'ST' : r.rank === 2 ? 'ND' : r.rank === 3 ? 'RD' : 'TH');
+    const suffix = r.rank === 1 ? 'ST' : r.rank === 2 ? 'ND' : r.rank === 3 ? 'RD' : 'TH';
+    const rankLabel = r.rank + suffix + (isLast ? ' (LAST)' : '');
     return '<div class="pf-rank-list-row' + (isLast ? ' last' : '') + '">' +
       '<div class="pf-rank-num">' + rankLabel + '</div>' +
-      '<div class="pf-rank-name">' + r.name + '</div>' +
+      '<div class="pf-rank-name">' + r.agent + '</div>' +
       '<div class="pf-rank-pct" style="color:' + pfColorForPct(r.pct) + '">' + r.pct.toFixed(1) + '%</div>' +
     '</div>';
   }).join('');
 }
 
-function pfRender(data) {
-  document.getElementById('pfMonthRange').textContent = data.monthRange;
-  pfRenderDepartments(data.departments);
-  pfRenderRanking(data.overallRanking);
-  document.getElementById('pfStatus').textContent = 'Showing mock data — not yet connected to a live endpoint.';
+async function pfLoad() {
+  const statusEl = document.getElementById('pfStatus');
+  statusEl.textContent = 'Loading...';
+  try {
+    const params = new URLSearchParams({ range: 'today' });
+    if (pfState.asOfDate) params.set('date', pfState.asOfDate);
+    const res = await fetch('/api/dashboard/performance?' + params.toString());
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.getElementById('pfMonthRange').textContent = pfFmtDateLabel(d.monthStart) + ' - ' + pfFmtDateLabel(d.date);
+    pfRenderDepartments(d.departments || []);
+    pfRenderRanking(d.fullMonthlyRanking || []);
+
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — month-to-date through ' + d.date;
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
 }
 
-document.querySelectorAll('#pfFilterRow .pf-filter-btn').forEach((btn) => {
+document.querySelectorAll('#pfFilterRow .pf-filter-btn[data-range]').forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll('#pfFilterRow .pf-filter-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    // Filter switching has no real effect yet — PF_MOCK_DATA is static
-    // regardless of range until this is wired to a live endpoint.
-    pfRender(PF_MOCK_DATA);
+    if (btn.dataset.range === 'yesterday') {
+      const d = new Date(); d.setUTCDate(d.getUTCDate() - 1);
+      pfState.asOfDate = d.toISOString().slice(0, 10);
+    } else {
+      pfState.asOfDate = null; // "This Month" and the ghost "🏆 This Month" both mean as-of-today
+    }
+    pfLoad();
   };
 });
 
-pfRender(PF_MOCK_DATA);
+pfLoad();
 </script>
 `;
