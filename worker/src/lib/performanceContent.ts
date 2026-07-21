@@ -224,32 +224,18 @@ pfLoad();
 `;
 
 // Daily / Range Performance: a second, separate section appended below
-// Monthly Leaderboard & Incentives, per explicit instruction — its own
-// date/range control, independent of the Monthly section's. UI-only for
-// now: static/mock data (exact numbers from the reference image), no
-// backend endpoint yet, structured (DR_MOCK_DATA + render functions kept
-// separate from the pf* ones above) so a real fetch can be swapped in
-// later without touching the render logic.
+// Monthly Leaderboard & Incentives — its own date/range control,
+// independent of the Monthly section's. Live data from
+// /api/dashboard/performance's dailyRangeDepartments field (see that
+// endpoint's comment in index.ts for exactly how each department/metric
+// is defined, including "FD 2-5 Days Conversion").
 //
-// IMPORTANT: flagging a real inconsistency for whoever wires this to real
-// data, rather than silently picking a side. This section's department-
-// to-KPI mapping does NOT match the Monthly Leaderboard section directly
-// above it, per the reference images given for each:
-//   - Reactivation Team: Reactivation Low + High — SAME as Monthly's
-//     Reactivation Team. Consistent.
-//   - General (here): Low + High VIP Upgrade — Monthly's "General" card
-//     uses Retention instead.
-//   - VIP Team (here): Low + High Premium Active — Monthly's "VIP Team"
-//     card uses VIP Upgrade Low/High instead.
-//   - FTD Team (here): Retention + a new "FD 2-5 Days Conversion" metric
-//     — Monthly's "FTD Team" card uses a single new first-deposit-count
-//     metric instead, and doesn't show Retention at all.
-// In short: "VIP Team" and "General" mean different KPIs depending on
-// which section of this same page you're looking at, and "FTD Team"
-// combines Retention with a still-undefined "FD 2-5 Days Conversion"
-// metric here specifically. Confirm the intended mapping (and define
-// "FD 2-5 Days Conversion" — it isn't any existing KPI) before wiring
-// this section to real data.
+// NOTE: kept as a genuinely different department-to-KPI mapping than the
+// Monthly Leaderboard section above it, per the two separate reference
+// images given for each — confirmed 2026-07-21 to keep both as-is rather
+// than reconciling them. "VIP Team" and "General" mean different KPIs
+// depending on which section of this page you're looking at; only
+// Reactivation Team is consistent between the two.
 export const DAILY_RANGE_PERFORMANCE_CONTENT_HTML = `
 <style>
   .dr-header { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 4px; }
@@ -306,53 +292,14 @@ export const DAILY_RANGE_PERFORMANCE_CONTENT_HTML = `
 <div id="drStatus" style="font-size:12.5px;color:#9ca3af;margin-top:12px;"></div>
 
 <script>
-// Stand-in for a future live endpoint — see the file-level comment above
-// for the unresolved department-to-KPI mapping question this mock
-// intentionally leaves open (matches the reference image's own numbers
-// exactly rather than reusing the Monthly section's different mapping).
-const DR_MOCK_DATA = {
-  date: '21-July',
-  departments: [
-    { name: 'FTD Team', icon: '🎉', totalAgents: 12, metricLabels: ['Retention', 'FD 2-5 Days Conver...'], agents: [
-      { agent: 'Sahana (SL)', m1: '4/7 (57.1%)', m1pct: 57.1, m2: '1/19 (5.3%)', m2pct: 5.3, score: 58.77 },
-      { agent: 'Lakshmi (WFH)', m1: '3/7 (42.9%)', m1pct: 42.9, m2: '0/17 (0.0%)', m2pct: 0.0, score: 50.00 },
-      { agent: 'Naira (WFH)', m1: '3/12 (25.0%)', m1pct: 25.0, m2: '1/42 (2.4%)', m2pct: 2.4, score: 45.63 },
-      { agent: 'Reetu (WFH)', m1: '2/10 (20.0%)', m1pct: 20.0, m2: '0/39 (0.0%)', m2pct: 0.0, score: 33.33 },
-      { agent: 'Nisha (WFH)', m1: '2/11 (18.2%)', m1pct: 18.2, m2: '1/57 (1.8%)', m2pct: 1.8, score: 33.23 },
-      { agent: 'Rithika (WFH)', m1: null, m2: '1/18 (5.6%)', m2pct: 5.6, score: 18.52 },
-      { agent: 'Amar (WFH)', m1: '1/11 (9.1%)', m1pct: 9.1, m2: '1/53 (1.9%)', m2pct: 1.9, score: 18.30 },
-    ]},
-    { name: 'VIP Team', icon: '💎', totalAgents: 12, metricLabels: ['Low Premium Active', 'High Premium Active'], agents: [
-      { agent: 'Amar (WFH)', m1: '24/147 (16.3%)', m1pct: 16.3, m2: '4/7 (57.1%)', m2pct: 57.1, score: 73.32 },
-      { agent: 'Preethy (WFH)', m1: '6/38 (15.8%)', m1pct: 15.8, m2: '1/2 (50.0%)', m2pct: 50.0, score: 72.56 },
-      { agent: 'Sahana (SL)', m1: '58/528 (11.0%)', m1pct: 11.0, m2: '80/274 (29.2%)', m2pct: 29.2, score: 57.40 },
-      { agent: 'Lakshmi (WFH)', m1: '51/521 (9.8%)', m1pct: 9.8, m2: '71/234 (30.3%)', m2pct: 30.3, score: 57.33 },
-      { agent: 'Shakshi (WFH)', m1: '4/78 (5.1%)', m1pct: 5.1, m2: '2/4 (50.0%)', m2pct: 50.0, score: 57.33 },
-      { agent: 'Anitha (WFH)', m1: '53/416 (12.7%)', m1pct: 12.7, m2: '36/148 (24.3%)', m2pct: 24.3, score: 52.95 },
-      { agent: 'Reetu (WFH)', m1: '37/448 (8.3%)', m1pct: 8.3, m2: '21/74 (28.4%)', m2pct: 28.4, score: 52.34 },
-    ]},
-    { name: 'Reactivation Team', icon: '🔄', totalAgents: 12, metricLabels: ['Reactivation Low', 'Reactivation High'], agents: [
-      { agent: 'Sathya (WFH)', m1: '3/30', m1pct: 10.0, m2: '3/10', m2pct: 30.0, score: 20.00 },
-      { agent: 'Naira (WFH)', m1: '4/30', m1pct: 13.3, m2: '1/10', m2pct: 10.0, score: 11.67 },
-      { agent: 'Muskhan (WFH)', m1: '3/30', m1pct: 10.0, m2: '1/10', m2pct: 10.0, score: 10.00 },
-      { agent: 'Sahana (SL)', m1: '2/30', m1pct: 6.7, m2: '1/10', m2pct: 10.0, score: 8.33 },
-      { agent: 'Reetu (WFH)', m1: '5/30', m1pct: 16.7, m2: '0/10', m2pct: 0.0, score: 8.33 },
-      { agent: 'Anitha (WFH)', m1: '1/30', m1pct: 3.3, m2: '1/10', m2pct: 10.0, score: 6.67 },
-      { agent: 'Nisha (WFH)', m1: '4/30', m1pct: 13.3, m2: '0/10', m2pct: 0.0, score: 6.67 },
-    ]},
-    { name: 'General', icon: '📊', totalAgents: 12, metricLabels: ['Low VIP Upgrade', 'High VIP Upgrade'], agents: [
-      { agent: 'Naira (WFH)', m1: '4/10', m1pct: 40.0, m2: '1/5', m2pct: 20.0, score: 30.00 },
-      { agent: 'Nisha (WFH)', m1: '1/10', m1pct: 10.0, m2: '1/5', m2pct: 20.0, score: 15.00 },
-      { agent: 'Anitha (WFH)', m1: '2/10', m1pct: 20.0, m2: '0/5', m2pct: 0.0, score: 10.00 },
-      { agent: 'Lakshmi (WFH)', m1: '2/10', m1pct: 20.0, m2: '0/5', m2pct: 0.0, score: 10.00 },
-      { agent: 'Reetu (WFH)', m1: '1/10', m1pct: 10.0, m2: '0/5', m2pct: 0.0, score: 5.00 },
-      { agent: 'Sahana (SL)', m1: '1/10', m1pct: 10.0, m2: '0/5', m2pct: 0.0, score: 5.00 },
-      { agent: 'Sathya (WFH)', m1: '1/10', m1pct: 10.0, m2: '0/5', m2pct: 0.0, score: 5.00 },
-    ]},
-  ],
-};
+const drState = { range: 'today' };
 
 function drColorForPct(pct) { return pct >= 100 ? '#15803d' : pct >= 60 ? '#c2410c' : '#dc2626'; }
+function drFmtDateLabel(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  return d + '-' + monthName;
+}
 
 function drMetricCell(label, value, pct) {
   if (value === null) {
@@ -374,9 +321,9 @@ function drRenderDepartments(departments) {
         '<div class="dr-card-count">' + dept.totalAgents + ' agents</div>' +
       '</div>' +
       '<div class="dr-card-list">' +
-        dept.agents.map((a, i) =>
+        (dept.agents.length > 0 ? dept.agents.map((a) =>
           '<div class="dr-row">' +
-            '<div class="dr-rank">' + (i + 1) + '</div>' +
+            '<div class="dr-rank">' + a.rank + '</div>' +
             '<div class="dr-agent">' + a.agent + '</div>' +
             '<div class="dr-metrics">' +
               drMetricCell(dept.metricLabels[0], a.m1, a.m1pct) +
@@ -384,28 +331,37 @@ function drRenderDepartments(departments) {
             '</div>' +
             '<div class="dr-score" style="color:' + drColorForPct(a.score) + '">' + a.score.toFixed(2) + '%</div>' +
           '</div>'
-        ).join('') +
+        ).join('') : '<div style="font-size:12px;color:#9ca3af;padding:8px 0;">No qualifying agents in this window</div>') +
       '</div>' +
     '</div>'
   ).join('');
 }
 
-function drRender(data) {
-  document.getElementById('drDateBadge').textContent = '📅 ' + data.date;
-  drRenderDepartments(data.departments);
-  document.getElementById('drStatus').textContent = 'Showing mock data — not yet connected to a live endpoint.';
+async function drLoad() {
+  const statusEl = document.getElementById('drStatus');
+  statusEl.textContent = 'Loading...';
+  try {
+    const res = await fetch('/api/dashboard/performance?range=' + drState.range);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.getElementById('drDateBadge').textContent = '📅 ' + drFmtDateLabel(d.date);
+    drRenderDepartments(d.dailyRangeDepartments || []);
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — ' + d.rangeStart + ' to ' + d.rangeEnd;
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
 }
 
 document.querySelectorAll('#drFilterRow .dr-filter-btn').forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll('#drFilterRow .dr-filter-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    // Range switching has no real effect yet — DR_MOCK_DATA is static
-    // regardless of range until this is wired to a live endpoint.
-    drRender(DR_MOCK_DATA);
+    drState.range = btn.dataset.range;
+    drLoad();
   };
 });
 
-drRender(DR_MOCK_DATA);
+drLoad();
 </script>
 `;
