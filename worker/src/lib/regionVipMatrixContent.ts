@@ -1,9 +1,11 @@
 // Platform Analysis section, last on the page: Region vs VIP Depositor
-// Matrix. UI-only per explicit instruction: static/mock data matching the
-// provided reference design exactly (layout, spacing, colors, filters,
-// scrollable table). No backend endpoint yet — wiring to real data is a
-// deliberate follow-up, not done here. Originally placed on the Home page,
-// moved here per follow-up request.
+// Matrix. Live data from
+// /api/dashboard/platform-analysis/region-vip-matrix (see that endpoint's
+// comment in index.ts for the VIP-bracket-capped-at-10 definition and the
+// day/week/month/multi date modes). Layout/styling matches the provided
+// reference design; only the data source changed from the original static
+// mock. Originally placed on the Home page, moved here per follow-up
+// request.
 export const REGION_VIP_MATRIX_CONTENT_HTML = `
 <style>
   .rv-header { display: flex; align-items: center; justify-content: space-between; margin: 24px 0 14px; }
@@ -51,17 +53,12 @@ export const REGION_VIP_MATRIX_CONTENT_HTML = `
   </div>
 
   <div class="rv-controls">
-    <button class="rv-filter-btn active" id="rvFilterDay">Day</button>
-    <button class="rv-filter-btn" id="rvFilterMulti">Multi-select Dates</button>
-    <button class="rv-filter-btn" id="rvFilterWeek">Week (Mon-Sun)</button>
-    <button class="rv-filter-btn" id="rvFilterMonth">Month</button>
-    <select class="rv-date-select" id="rvDateSelect">
-      <option>21-July</option>
-      <option>20-July</option>
-      <option>19-July</option>
-      <option>18-July</option>
-      <option>17-July</option>
-    </select>
+    <button class="rv-filter-btn active" id="rvFilterDay" data-mode="day">Day</button>
+    <button class="rv-filter-btn" id="rvFilterMulti" data-mode="multi">Multi-select Dates</button>
+    <button class="rv-filter-btn" id="rvFilterWeek" data-mode="week">Week (Mon-Sun)</button>
+    <button class="rv-filter-btn" id="rvFilterMonth" data-mode="month">Month</button>
+    <select class="rv-date-select" id="rvDateSelect"></select>
+    <select class="rv-date-select" id="rvMultiSelect" multiple size="4" style="display:none; min-width:110px;"></select>
   </div>
 
   <div class="rv-table-wrap">
@@ -74,38 +71,86 @@ export const REGION_VIP_MATRIX_CONTENT_HTML = `
           <th>Total</th>
         </tr>
       </thead>
-      <tbody>
-        <tr><td>Tamil Nadu</td><td>10</td><td>17</td><td>10</td><td>45</td><td>48</td><td>33</td><td>10</td><td>3</td><td>1</td><td>1</td><td>178</td></tr>
-        <tr><td>Karnataka</td><td>25</td><td>8</td><td>4</td><td>17</td><td>14</td><td>4</td><td>3</td><td>0</td><td>0</td><td>0</td><td>75</td></tr>
-        <tr><td>Unknown</td><td>27</td><td>13</td><td>3</td><td>4</td><td>3</td><td>1</td><td>0</td><td>1</td><td>0</td><td>0</td><td>52</td></tr>
-        <tr><td>Maharashtra</td><td>7</td><td>7</td><td>3</td><td>13</td><td>5</td><td>7</td><td>4</td><td>1</td><td>2</td><td>0</td><td>49</td></tr>
-        <tr><td>Uttar Pradesh</td><td>5</td><td>7</td><td>4</td><td>13</td><td>9</td><td>2</td><td>2</td><td>0</td><td>0</td><td>0</td><td>42</td></tr>
-        <tr><td>Kerala</td><td>2</td><td>2</td><td>0</td><td>10</td><td>10</td><td>7</td><td>5</td><td>1</td><td>0</td><td>0</td><td>37</td></tr>
-        <tr><td>Andhra Pradesh</td><td>1</td><td>2</td><td>6</td><td>7</td><td>8</td><td>7</td><td>4</td><td>1</td><td>0</td><td>0</td><td>36</td></tr>
-        <tr><td>Gujarat Belt</td><td>1</td><td>2</td><td>3</td><td>11</td><td>6</td><td>7</td><td>2</td><td>1</td><td>0</td><td>0</td><td>33</td></tr>
-        <tr><td>Madhya Pradesh</td><td>0</td><td>6</td><td>2</td><td>4</td><td>8</td><td>4</td><td>1</td><td>1</td><td>1</td><td>0</td><td>27</td></tr>
-        <tr><td>Bihar Belt</td><td>1</td><td>6</td><td>1</td><td>6</td><td>7</td><td>1</td><td>1</td><td>0</td><td>1</td><td>0</td><td>24</td></tr>
-        <tr><td>West Bengal</td><td>1</td><td>2</td><td>3</td><td>10</td><td>4</td><td>0</td><td>1</td><td>0</td><td>0</td><td>0</td><td>21</td></tr>
-        <tr><td>Rajasthan</td><td>1</td><td>0</td><td>0</td><td>4</td><td>5</td><td>2</td><td>0</td><td>0</td><td>0</td><td>0</td><td>12</td></tr>
-        <tr><td>Delhi NCR</td><td>0</td><td>3</td><td>0</td><td>1</td><td>6</td><td>1</td><td>0</td><td>0</td><td>0</td><td>0</td><td>11</td></tr>
-      </tbody>
+      <tbody id="rvTableBody"><tr><td colspan="12">Loading...</td></tr></tbody>
     </table>
   </div>
 </div>
 
+<div id="rvStatus" style="font-size:13px;color:#888;"></div>
+
 <script>
-['rvFilterDay', 'rvFilterMulti', 'rvFilterWeek', 'rvFilterMonth'].forEach((id) => {
-  document.getElementById(id).onclick = () => {
-    ['rvFilterDay', 'rvFilterMulti', 'rvFilterWeek', 'rvFilterMonth'].forEach((otherId) => {
-      document.getElementById(otherId).classList.toggle('active', otherId === id);
-    });
-  };
-});
+const rvState = { mode: 'day' };
+
+function rvAddDays(iso, n) {
+  const d = new Date(iso + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function rvFmtDateLabel(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const monthName = new Date(Date.UTC(y, m - 1, d)).toLocaleString('en-US', { month: 'long', timeZone: 'UTC' });
+  return d + '-' + monthName;
+}
+
+// Populate both date pickers with the last 14 days once — the single
+// <select> drives day/week/month (any date in the target week/month
+// works as the reference), the multi <select> drives multi-select mode.
+(function rvPopulateDates() {
+  const today = new Date().toISOString().slice(0, 10);
+  const dates = Array.from({ length: 14 }, (_, i) => rvAddDays(today, -i));
+  const single = document.getElementById('rvDateSelect');
+  const multi = document.getElementById('rvMultiSelect');
+  single.innerHTML = dates.map((d) => '<option value="' + d + '">' + rvFmtDateLabel(d) + '</option>').join('');
+  multi.innerHTML = dates.map((d) => '<option value="' + d + '">' + rvFmtDateLabel(d) + '</option>').join('');
+  multi.options[0].selected = true;
+})();
 
 function rvTableToCsv(tableEl) {
   const rows = [...tableEl.querySelectorAll('tr')];
   return rows.map((row) => [...row.children].map((c) => '"' + c.textContent.trim().replace(/"/g,'""') + '"').join(',')).join('\\n');
 }
+
+async function rvLoad() {
+  const statusEl = document.getElementById('rvStatus');
+  try {
+    const params = new URLSearchParams({ mode: rvState.mode });
+    if (rvState.mode === 'multi') {
+      const selected = [...document.getElementById('rvMultiSelect').selectedOptions].map((o) => o.value);
+      params.set('dates', (selected.length > 0 ? selected : [document.getElementById('rvDateSelect').value]).join(','));
+    } else {
+      params.set('date', document.getElementById('rvDateSelect').value);
+    }
+
+    const res = await fetch('/api/dashboard/platform-analysis/region-vip-matrix?' + params.toString());
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.getElementById('rvTableBody').innerHTML = (d.regions || []).map((r) =>
+      '<tr><td>' + r.region + '</td>' + r.levels.map((v) => '<td>' + v + '</td>').join('') + '<td>' + r.total + '</td></tr>'
+    ).join('') || '<tr><td colspan="12">No data</td></tr>';
+
+    const rangeText = d.range.start === d.range.end ? rvFmtDateLabel(d.range.start) : rvFmtDateLabel(d.range.start) + ' to ' + rvFmtDateLabel(d.range.end);
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' — showing ' + rangeText;
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+['rvFilterDay', 'rvFilterMulti', 'rvFilterWeek', 'rvFilterMonth'].forEach((id) => {
+  document.getElementById(id).onclick = () => {
+    ['rvFilterDay', 'rvFilterMulti', 'rvFilterWeek', 'rvFilterMonth'].forEach((otherId) => {
+      document.getElementById(otherId).classList.toggle('active', otherId === id);
+    });
+    const mode = document.getElementById(id).dataset.mode;
+    rvState.mode = mode;
+    document.getElementById('rvDateSelect').style.display = mode === 'multi' ? 'none' : '';
+    document.getElementById('rvMultiSelect').style.display = mode === 'multi' ? '' : 'none';
+    rvLoad();
+  };
+});
+document.getElementById('rvDateSelect').onchange = rvLoad;
+document.getElementById('rvMultiSelect').onchange = rvLoad;
+
 document.getElementById('rvExportBtn').onclick = () => {
   const blob = new Blob([rvTableToCsv(document.getElementById('rvTable'))], { type: 'text/csv' });
   const a = document.createElement('a');
@@ -113,5 +158,7 @@ document.getElementById('rvExportBtn').onclick = () => {
   a.download = 'region-vip-depositor-matrix.csv';
   a.click();
 };
+
+rvLoad();
 </script>
 `;

@@ -2465,6 +2465,110 @@ export default {
       });
     }
 
+    // Platform Analysis (last section): Region vs VIP Depositor Matrix.
+    // Rows = region (same COALESCE(users.city, deposits.region, 'Unknown')
+    // fallback used elsewhere), columns = the same deposit-based VIP
+    // bracket system as everywhere else on this dashboard (vipLevelCase,
+    // computed from users.total_deposit — a lifetime figure, not scoped to
+    // the selected date range). Each cell = COUNT(DISTINCT user_id) who
+    // made at least one COMPLETE deposit within the selected range —
+    // a user active on multiple selected days is counted once, not once
+    // per day, hence the DISTINCT.
+    //
+    // The reference design's table only has VIP 1-10 columns (no VIP 0,
+    // nothing above 10) — VIP 0 (never deposited enough to leave bracket
+    // 0) is excluded entirely here since showing it would just be "users
+    // who deposited today but are still VIP 0," a different question than
+    // this matrix asks. VIP 11-14 are folded into the "VIP 10" column
+    // rather than dropped, since those users are real and their deposits
+    // shouldn't silently disappear from the Total column — if a separate
+    // "VIP 10+" bucket is wanted instead, change the CASE below.
+    //
+    // mode=day (default): single date via ?date=. mode=week: Monday-Sunday
+    // of the week containing ?date=. mode=month: calendar month of ?date=.
+    // mode=multi: explicit ?dates=YYYY-MM-DD,YYYY-MM-DD,... list.
+    if (url.pathname === "/api/dashboard/platform-analysis/region-vip-matrix" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const mode = ["day", "week", "month", "multi"].includes(url.searchParams.get("mode") || "")
+        ? (url.searchParams.get("mode") as "day" | "week" | "month" | "multi")
+        : "day";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+
+      let dateClause: string;
+      let dateBind: string[];
+      let rangeLabel: { start: string; end: string };
+
+      if (mode === "day") {
+        dateClause = "date(d.create_time) = ?";
+        dateBind = [anchorDate];
+        rangeLabel = { start: anchorDate, end: anchorDate };
+      } else if (mode === "week") {
+        const d = new Date(anchorDate + "T00:00:00Z");
+        const dow = d.getUTCDay(); // 0=Sun..6=Sat
+        d.setUTCDate(d.getUTCDate() - ((dow + 6) % 7));
+        const weekStart = d.toISOString().slice(0, 10);
+        const weekEndDate = new Date(weekStart + "T00:00:00Z");
+        weekEndDate.setUTCDate(weekEndDate.getUTCDate() + 6);
+        const weekEnd = weekEndDate.toISOString().slice(0, 10);
+        dateClause = "date(d.create_time) BETWEEN ? AND ?";
+        dateBind = [weekStart, weekEnd];
+        rangeLabel = { start: weekStart, end: weekEnd };
+      } else if (mode === "month") {
+        const monthStart = anchorDate.slice(0, 8) + "01";
+        const d = new Date(monthStart + "T00:00:00Z");
+        d.setUTCMonth(d.getUTCMonth() + 1);
+        d.setUTCDate(d.getUTCDate() - 1);
+        const monthEnd = d.toISOString().slice(0, 10);
+        dateClause = "date(d.create_time) BETWEEN ? AND ?";
+        dateBind = [monthStart, monthEnd];
+        rangeLabel = { start: monthStart, end: monthEnd };
+      } else {
+        const rawDates = (url.searchParams.get("dates") || anchorDate)
+          .split(",").map((s) => s.trim()).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s));
+        const uniqueDates = Array.from(new Set(rawDates.length > 0 ? rawDates : [anchorDate])).sort();
+        dateClause = `date(d.create_time) IN (${uniqueDates.map(() => "?").join(",")})`;
+        dateBind = uniqueDates;
+        rangeLabel = { start: uniqueDates[0], end: uniqueDates[uniqueDates.length - 1] };
+      }
+
+      const VIP_LEVEL_CAPPED = `MIN(10, ${vipLevelCase("COALESCE(u.total_deposit, 0)")})`;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `WITH day_dep AS (
+             SELECT DISTINCT d.user_id, COALESCE(u.city, d.region, 'Unknown') as region,
+                    ${VIP_LEVEL_CAPPED} as vip_level
+             FROM deposits d LEFT JOIN users u ON u.user_id = d.user_id
+             WHERE d.status = 'COMPLETE' AND d.user_id IS NOT NULL AND ${dateClause}
+           )
+           SELECT region, vip_level, COUNT(DISTINCT user_id) as cnt
+           FROM day_dep WHERE vip_level >= 1
+           GROUP BY region, vip_level`
+        )
+        .bind(...dateBind)
+        .all<{ region: string; vip_level: number; cnt: number }>();
+
+      const byRegion = new Map<string, { levels: number[]; total: number }>();
+      for (const r of rows.results) {
+        if (!byRegion.has(r.region)) byRegion.set(r.region, { levels: new Array(11).fill(0), total: 0 });
+        const entry = byRegion.get(r.region)!;
+        entry.levels[r.vip_level] = r.cnt;
+        entry.total += r.cnt;
+      }
+      const regions = Array.from(byRegion.entries())
+        .map(([region, entry]) => ({ region, levels: entry.levels.slice(1, 11), total: entry.total }))
+        .sort((a, b) => b.total - a.total);
+
+      return Response.json({
+        mode,
+        date: anchorDate,
+        range: rangeLabel,
+        regions,
+      });
+    }
+
     // Search User page. Read (search, agent list) stays here as usual —
     // reassign-agent and ban/unban are narrow single-row writes tied to the
     // dashboard session an admin is already using to search, unlike the
