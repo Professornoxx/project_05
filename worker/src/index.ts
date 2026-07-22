@@ -23,7 +23,6 @@ import { WEEKLY_PERFORMANCE_CONTENT_HTML } from "./lib/weeklyPerformanceContent"
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import {
   HOME_AMOUNT_RANGE_CARDS,
-  ANALYTICS_AMOUNT_RANGE_CARD,
 } from "./lib/amountRangeCard";
 import { renderLoginPage } from "./lib/loginPage";
 import { renderAgentLoginPage } from "./lib/agentLoginPage";
@@ -151,7 +150,7 @@ export default {
           : dashboardRoute.key === "action-center"
           ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + WEEKLY_CASHBACK_SHIELD_CONTENT_HTML
           : dashboardRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
@@ -3352,7 +3351,7 @@ export default {
           : agentRoute.key === "action-center"
           ? NEW_USERS_BONUSES_CONTENT_HTML + ACTION_CENTER_CONTENT_HTML + INACTIVE_USERS_CONTENT_HTML + ACTIVE_USERS_CONTENT_HTML + WEEKLY_CASHBACK_SHIELD_CONTENT_HTML
           : agentRoute.key === "analytics"
-          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML + ANALYTICS_AMOUNT_RANGE_CARD
+          ? ANALYTICS_CONTENT_HTML + REACTIVATION_CONTENT_HTML + VIP_UPGRADE_CONTENT_HTML + RETENTION_CONTENT_HTML
           : agentRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : agentRoute.key === "search-user"
