@@ -23,7 +23,7 @@ import { WEEKLY_PERFORMANCE_CONTENT_HTML } from "./lib/weeklyPerformanceContent"
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import {
   HOME_AMOUNT_RANGE_CARDS,
-  ANALYTICS_AMOUNT_RANGE_CARD, PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD,
+  ANALYTICS_AMOUNT_RANGE_CARD,
 } from "./lib/amountRangeCard";
 import { renderLoginPage } from "./lib/loginPage";
 import { renderAgentLoginPage } from "./lib/agentLoginPage";
@@ -155,7 +155,7 @@ export default {
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
-          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + PLATFORM_ANALYSIS_AMOUNT_RANGE_CARD + REGION_VIP_MATRIX_CONTENT_HTML
+          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + REGION_VIP_MATRIX_CONTENT_HTML
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
