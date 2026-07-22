@@ -2423,15 +2423,22 @@ export default {
     // targets — no target-setting table/UI exists yet, so these are not
     // derived from anything in the database. Update them here directly
     // until a real target source exists.
+    //
+    // Recalibrated 2026-07-22 against this project's own daily-records-db
+    // (30-day trailing average at the time: ~210 old users/day, ~₹1,935
+    // avg deposit/old user, ~₹4,08,700 total deposit/day, ~214 depositors/
+    // day) — the previous values (1800 / 1900 / 3,900,000 / 1900) were
+    // ~8-9x actual traffic and never matched this project's data; set to
+    // roughly +10% over the trailing average as a real stretch goal.
     if (url.pathname === "/api/dashboard/platform-analysis/weekly-performance" && request.method === "GET") {
       const authFail = requireAdmin(request, env, "dashboard");
       if (authFail) return authFail;
 
       const TARGETS = {
-        oldUsersCount: 1800,
-        avgDepositOldUsers: 1900,
-        avgTotalDepositDay: 3900000,
-        totalDepositorCountDay: 1900,
+        oldUsersCount: 230,
+        avgDepositOldUsers: 2100,
+        avgTotalDepositDay: 450000,
+        totalDepositorCountDay: 235,
       };
 
       const anchorDate = url.searchParams.get("date") || todayIST();
