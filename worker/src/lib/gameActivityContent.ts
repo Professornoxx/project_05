@@ -1,17 +1,23 @@
-// Platform Analysis page, last section: Game Activity. Two cards —
-// Top Games (per user+game wagering total) and Highest Single Bet (per
-// user's single largest wallet_details row) — both scoped to "new" users
-// (first-ever deposit within the last 33 days, same is_first_deposit
-// cohort as New vs Old User Analysis) and both reading real-gameplay
-// wallet_details rows only (game_name + source_name populated — the
-// inverse of the Bonus Claim Report's bonus-row filter). No bet/win type
-// column exists in this data (see index.ts endpoint comment), so "Bet
-// Amount" here is total wagering activity, not stakes net of payouts —
-// agreed as the honest proxy available 2026-07-22. Data from
-// /api/dashboard/platform-analysis/game-activity/{top-games,highest-bet}.
-// Styled to match the existing pa-/wp- card conventions used elsewhere on
-// this page (pill period tabs, icon-badge panel head, sticky-header
-// table, Prev/Next pager, paginated CSV export).
+// Platform Analysis page, last section: Game Activity. Four cards, two
+// grids. Grid 1 — Top Games (per user+game wagering total) and Highest
+// Single Bet (per user's single largest wallet_details row) — both
+// scoped to "new" users (first-ever deposit within the last 33 days,
+// same is_first_deposit cohort as New vs Old User Analysis) and both
+// reading real-gameplay wallet_details rows only (game_name + source_name
+// populated — the inverse of the Bonus Claim Report's bonus-row filter).
+// No bet/win type column exists in this data (see index.ts endpoint
+// comment), so "Bet Amount" here is total wagering activity, not stakes
+// net of payouts — agreed as the honest proxy available 2026-07-22.
+// Grid 2 — High/Low Roller Active: VIP-tiered lifetime-engagement
+// leaderboards (eligibility criteria + card shape modeled on a reference
+// design; thresholds recalibrated to this project's own data since the
+// reference's absolute numbers produced zero eligible users here — see
+// the roller-active endpoint comment in index.ts for the exact numbers
+// and how they were derived). Data from
+// /api/dashboard/platform-analysis/game-activity/{top-games,highest-bet,
+// roller-active}. Styled to match the existing pa-/wp- card conventions
+// used elsewhere on this page (pill period tabs, icon-badge panel head,
+// sticky-header table, Prev/Next pager, paginated CSV export).
 export const GAME_ACTIVITY_CONTENT_HTML = `
 <style>
   .ga-header { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 14px; flex-wrap: wrap; gap: 10px; }
@@ -25,11 +31,15 @@ export const GAME_ACTIVITY_CONTENT_HTML = `
   .ga-panel { background: #fff; border-radius: 0 10px 10px 0; padding: 18px 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   .ga-panel.indigo { border-left: 4px solid #6366f1; }
   .ga-panel.amber { border-left: 4px solid #f59e0b; }
+  .ga-panel.green { border-left: 4px solid #16a34a; }
+  .ga-panel.red { border-left: 4px solid #ef4444; }
   .ga-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 6px; flex-wrap: wrap; }
   .ga-panel-title-group { display: flex; align-items: center; gap: 10px; }
   .ga-icon-badge { display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; font-size: 15px; flex-shrink: 0; }
   .ga-icon-badge.indigo { background: #eef2ff; }
   .ga-icon-badge.amber { background: #fef3c7; }
+  .ga-icon-badge.green { background: #dcfce7; }
+  .ga-icon-badge.red { background: #fee2e2; }
   .ga-panel-title { font-weight: 700; font-size: 14px; }
   .ga-count-badge { background: #eef2ff; color: #4338ca; font-size: 11px; font-weight: 700; padding: 3px 10px; border-radius: 999px; white-space: nowrap; margin-left: 8px; }
   .ga-excel-btn { background: #16a34a; color: #fff; border: none; padding: 7px 14px; border-radius: 16px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
@@ -102,10 +112,54 @@ export const GAME_ACTIVITY_CONTENT_HTML = `
   </div>
 </div>
 
+<div class="ga-grid" style="margin-top:20px;">
+  <div class="ga-panel green">
+    <div class="ga-panel-head">
+      <div class="ga-panel-title-group">
+        <div class="ga-icon-badge green">💎</div>
+        <div class="ga-panel-title">High Roller Active<span class="ga-count-badge" id="gaHighRollerCount">—</span></div>
+      </div>
+      <button class="ga-excel-btn" id="gaHighRollerExport">📥 Excel</button>
+    </div>
+    <div class="ga-panel-sub">VIP 7+, avg lifetime deposit ₹500+, 20+ lifetime deposits, ₹12,000+ lifetime total deposit, avg bet size (selected period) over ₹40, active within 15 days.</div>
+    <div class="ga-table-wrap">
+      <table class="ga-table" id="gaHighRollerTable">
+        <thead><tr><th>User ID</th><th>VIP</th><th>Agent</th><th>Total Deposit</th><th>Wallet Balance</th><th>Top Game Played</th></tr></thead>
+        <tbody><tr><td colspan="6">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="ga-pager">
+      <span id="gaHighRollerPageLabel">Page 1 of 1</span>
+      <span><button id="gaHighRollerPrev">← Prev</button> <button id="gaHighRollerNext">Next →</button></span>
+    </div>
+  </div>
+
+  <div class="ga-panel red">
+    <div class="ga-panel-head">
+      <div class="ga-panel-title-group">
+        <div class="ga-icon-badge red">🪙</div>
+        <div class="ga-panel-title">Low Roller Active<span class="ga-count-badge" id="gaLowRollerCount">—</span></div>
+      </div>
+      <button class="ga-excel-btn" id="gaLowRollerExport">📥 Excel</button>
+    </div>
+    <div class="ga-panel-sub">VIP 2-6, avg lifetime deposit under ₹500, under 20 lifetime deposits, under ₹12,000 lifetime total deposit, avg bet size (selected period) under ₹40, active within 10 days.</div>
+    <div class="ga-table-wrap">
+      <table class="ga-table" id="gaLowRollerTable">
+        <thead><tr><th>User ID</th><th>VIP</th><th>Agent</th><th>Total Deposit</th><th>Wallet Balance</th><th>Top Game Played</th></tr></thead>
+        <tbody><tr><td colspan="6">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="ga-pager">
+      <span id="gaLowRollerPageLabel">Page 1 of 1</span>
+      <span><button id="gaLowRollerPrev">← Prev</button> <button id="gaLowRollerNext">Next →</button></span>
+    </div>
+  </div>
+</div>
+
 <div id="gaStatus" style="font-size:13px;color:#888;margin-top:8px;"></div>
 
 <script>
-const gaState = { period: '15days', topGames: { page: 1 }, highestBet: { page: 1 } };
+const gaState = { period: '15days', topGames: { page: 1 }, highestBet: { page: 1 }, highRoller: { page: 1 }, lowRoller: { page: 1 } };
 
 function gaFmtInr(n) { return '₹' + Math.round(Number(n || 0)).toLocaleString('en-IN'); }
 function gaFmtLastActive(iso) {
@@ -196,9 +250,35 @@ async function gaLoadHighestBet() {
   }
 }
 
+async function gaLoadRoller(tier) {
+  const statusEl = document.getElementById('gaStatus');
+  const prefix = tier === 'high' ? 'gaHighRoller' : 'gaLowRoller';
+  try {
+    const s = tier === 'high' ? gaState.highRoller : gaState.lowRoller;
+    const res = await fetch('/api/dashboard/platform-analysis/game-activity/roller-active?tier=' + tier + '&period=' + gaState.period + '&page=' + s.page);
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || res.statusText);
+
+    document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
+      '<tr><td>' + r.user_id + '</td><td>' + r.vip + '</td><td>' + r.agent + '</td><td>' + gaFmtInr(r.total_deposit) +
+      '</td><td>' + gaFmtInr(r.user_balance) + '</td><td>' + r.top_game_played + '</td></tr>'
+    ).join('') || '<tr><td colspan="6">No data</td></tr>';
+
+    document.getElementById(prefix + 'Count').textContent = Number(d.total || 0).toLocaleString('en-IN');
+    document.getElementById(prefix + 'PageLabel').textContent = 'Page ' + d.page + ' of ' + d.totalPages;
+    document.getElementById(prefix + 'Prev').disabled = d.page <= 1;
+    document.getElementById(prefix + 'Next').disabled = d.page >= d.totalPages;
+    statusEl.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
 function gaLoadAll() {
   gaLoadTopGames();
   gaLoadHighestBet();
+  gaLoadRoller('high');
+  gaLoadRoller('low');
 }
 
 document.querySelectorAll('#gaPeriodTabs button').forEach((btn) => {
@@ -206,6 +286,8 @@ document.querySelectorAll('#gaPeriodTabs button').forEach((btn) => {
     gaState.period = btn.dataset.period;
     gaState.topGames.page = 1;
     gaState.highestBet.page = 1;
+    gaState.highRoller.page = 1;
+    gaState.lowRoller.page = 1;
     document.querySelectorAll('#gaPeriodTabs button').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
     gaLoadAll();
@@ -216,6 +298,10 @@ document.getElementById('gaTopGamesPrev').onclick = () => { if (gaState.topGames
 document.getElementById('gaTopGamesNext').onclick = () => { gaState.topGames.page++; gaLoadTopGames(); };
 document.getElementById('gaHighestBetPrev').onclick = () => { if (gaState.highestBet.page > 1) { gaState.highestBet.page--; gaLoadHighestBet(); } };
 document.getElementById('gaHighestBetNext').onclick = () => { gaState.highestBet.page++; gaLoadHighestBet(); };
+document.getElementById('gaHighRollerPrev').onclick = () => { if (gaState.highRoller.page > 1) { gaState.highRoller.page--; gaLoadRoller('high'); } };
+document.getElementById('gaHighRollerNext').onclick = () => { gaState.highRoller.page++; gaLoadRoller('high'); };
+document.getElementById('gaLowRollerPrev').onclick = () => { if (gaState.lowRoller.page > 1) { gaState.lowRoller.page--; gaLoadRoller('low'); } };
+document.getElementById('gaLowRollerNext').onclick = () => { gaState.lowRoller.page++; gaLoadRoller('low'); };
 
 document.getElementById('gaTopGamesExport').onclick = (e) => gaExportPaginated(
   '/api/dashboard/platform-analysis/game-activity/top-games?period=' + gaState.period,
@@ -229,6 +315,20 @@ document.getElementById('gaHighestBetExport').onclick = (e) => gaExportPaginated
   'highest-single-bet-new-users.csv',
   ['User ID', 'VIP', 'Agent', 'Highest Bet', 'Game Name', 'Last Active'],
   (r) => [r.user_id, r.vip, r.agent, r.highest_bet, r.game_name, r.last_active],
+  e.currentTarget
+);
+document.getElementById('gaHighRollerExport').onclick = (e) => gaExportPaginated(
+  '/api/dashboard/platform-analysis/game-activity/roller-active?tier=high&period=' + gaState.period,
+  'high-roller-active.csv',
+  ['User ID', 'VIP', 'Agent', 'Total Deposit', 'Wallet Balance', 'Top Game Played'],
+  (r) => [r.user_id, r.vip, r.agent, r.total_deposit, r.user_balance, r.top_game_played],
+  e.currentTarget
+);
+document.getElementById('gaLowRollerExport').onclick = (e) => gaExportPaginated(
+  '/api/dashboard/platform-analysis/game-activity/roller-active?tier=low&period=' + gaState.period,
+  'low-roller-active.csv',
+  ['User ID', 'VIP', 'Agent', 'Total Deposit', 'Wallet Balance', 'Top Game Played'],
+  (r) => [r.user_id, r.vip, r.agent, r.total_deposit, r.user_balance, r.top_game_played],
   e.currentTarget
 );
 
