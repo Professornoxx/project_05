@@ -20,6 +20,7 @@ import { RETENTION_CONTENT_HTML } from "./lib/retentionContent";
 import { PERFORMANCE_CONTENT_HTML, DAILY_RANGE_PERFORMANCE_CONTENT_HTML } from "./lib/performanceContent";
 import { PLATFORM_ANALYSIS_CONTENT_HTML } from "./lib/platformAnalysisContent";
 import { WEEKLY_PERFORMANCE_CONTENT_HTML } from "./lib/weeklyPerformanceContent";
+import { GAME_ACTIVITY_CONTENT_HTML } from "./lib/gameActivityContent";
 import { SEARCH_USER_CONTENT_HTML } from "./lib/searchUserContent";
 import {
   HOME_AMOUNT_RANGE_CARDS,
@@ -154,7 +155,7 @@ export default {
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
-          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + REGION_VIP_MATRIX_CONTENT_HTML
+          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + REGION_VIP_MATRIX_CONTENT_HTML + GAME_ACTIVITY_CONTENT_HTML
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
@@ -2860,6 +2861,152 @@ export default {
         date: anchorDate,
         range: rangeLabel,
         regions,
+      });
+    }
+
+    // Platform Analysis section 5 (last): Game Activity — "New" users
+    // reuse the exact same is_first_deposit-based cohort as New vs Old
+    // User Analysis above, fixed at a 33-day window regardless of which
+    // period tab is selected (the period tabs only bound the wallet_details
+    // activity window, not the new-user cohort). "Bet Amount" reuses the
+    // same real-gameplay filter as the Bonus Claim Report just above
+    // (game_name populated AND source_name populated — the inverse of that
+    // endpoint's bonus-claim rows) since wallet_details has no bet/win type
+    // column to separate stakes from payouts (confirmed: see Search User's
+    // "Recent Games Played" comment). This is therefore total wagering
+    // *activity*, not stakes net of payouts — the closest honest read
+    // available from this data, agreed as the approach 2026-07-22.
+    if (url.pathname === "/api/dashboard/platform-analysis/game-activity/top-games" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const period = ["day", "week", "month"].includes(url.searchParams.get("period") || "") ? url.searchParams.get("period")! : "15days";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const addDaysGA = (dateStr: string, n: number) => {
+        const d = new Date(dateStr + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+      const rangeStart =
+        period === "day" ? anchorDate
+        : period === "week" ? addDaysGA(anchorDate, -6)
+        : period === "month" ? addDaysGA(anchorDate, -29)
+        : addDaysGA(anchorDate, -14); // "15days"
+      const newUserCutoff = addDaysGA(anchorDate, -32); // "last 33 days" incl. anchorDate
+
+      const CTE = `WITH first_dep AS (
+           SELECT user_id, MIN(date(create_time)) as first_dep_date
+           FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+         ),
+         new_users AS (
+           SELECT user_id FROM first_dep WHERE first_dep_date BETWEEN ? AND ?
+         ),
+         gameplay AS (
+           SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+           FROM wallet_details wd
+           JOIN new_users nu ON nu.user_id = wd.user_id
+           WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+             AND wd.source_name IS NOT NULL AND wd.source_name != ''
+             AND date(wd.create_time) BETWEEN ? AND ?
+         ),
+         agg AS (
+           SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
+           FROM gameplay GROUP BY user_id, game_name
+         )`;
+      const binds = [newUserCutoff, anchorDate, rangeStart, anchorDate];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM agg`)
+        .bind(...binds)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT a.user_id, a.game_name, a.total_bet, a.last_active,
+                  ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
+                  COALESCE(u.assigned_agent, 'Unassigned') as agent
+           FROM agg a LEFT JOIN users u ON u.user_id = a.user_id
+           ORDER BY a.total_bet DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...binds, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    if (url.pathname === "/api/dashboard/platform-analysis/game-activity/highest-bet" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const period = ["day", "week", "month"].includes(url.searchParams.get("period") || "") ? url.searchParams.get("period")! : "15days";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const addDaysGA = (dateStr: string, n: number) => {
+        const d = new Date(dateStr + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+      const rangeStart =
+        period === "day" ? anchorDate
+        : period === "week" ? addDaysGA(anchorDate, -6)
+        : period === "month" ? addDaysGA(anchorDate, -29)
+        : addDaysGA(anchorDate, -14);
+      const newUserCutoff = addDaysGA(anchorDate, -32);
+
+      const CTE = `WITH first_dep AS (
+           SELECT user_id, MIN(date(create_time)) as first_dep_date
+           FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+         ),
+         new_users AS (
+           SELECT user_id FROM first_dep WHERE first_dep_date BETWEEN ? AND ?
+         ),
+         gameplay AS (
+           SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+           FROM wallet_details wd
+           JOIN new_users nu ON nu.user_id = wd.user_id
+           WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+             AND wd.source_name IS NOT NULL AND wd.source_name != ''
+             AND date(wd.create_time) BETWEEN ? AND ?
+         ),
+         ranked AS (
+           SELECT user_id, game_name, amount, create_time,
+                  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
+           FROM gameplay
+         )`;
+      const binds = [newUserCutoff, anchorDate, rangeStart, anchorDate];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM ranked WHERE rn = 1`)
+        .bind(...binds)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT r.user_id, r.game_name, r.amount as highest_bet, r.create_time as last_active,
+                  ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
+                  COALESCE(u.assigned_agent, 'Unassigned') as agent
+           FROM ranked r LEFT JOIN users u ON u.user_id = r.user_id
+           WHERE r.rn = 1
+           ORDER BY r.amount DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...binds, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
       });
     }
 
