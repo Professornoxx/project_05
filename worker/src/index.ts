@@ -2901,7 +2901,9 @@ export default {
            FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
          ),
          new_users AS (
-           SELECT user_id FROM first_dep WHERE first_dep_date BETWEEN ? AND ?
+           SELECT fd.user_id FROM first_dep fd
+           JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
+           WHERE fd.first_dep_date BETWEEN ? AND ?
          ),
          gameplay AS (
            SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
@@ -2967,7 +2969,9 @@ export default {
            FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
          ),
          new_users AS (
-           SELECT user_id FROM first_dep WHERE first_dep_date BETWEEN ? AND ?
+           SELECT fd.user_id FROM first_dep fd
+           JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
+           WHERE fd.first_dep_date BETWEEN ? AND ?
          ),
          gameplay AS (
            SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
@@ -3005,6 +3009,113 @@ export default {
 
       return Response.json({
         period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+        rows: rows.results,
+      });
+    }
+
+    // Game Activity, cards 3/4: High/Low Roller Active. Same tier/page
+    // architecture as Action Center's Active Users (single endpoint,
+    // `tier` param, two frontend calls) rather than the two-endpoint split
+    // used for Top Games/Highest Single Bet above, since this is one
+    // metric (lifetime engagement) split by VIP band, not two different
+    // metrics. Eligibility mirrors a reference design's shape (VIP band +
+    // avg lifetime deposit + lifetime deposit count + lifetime total
+    // deposit + avg bet size + active-within-days) but the reference's own
+    // absolute cutoffs (₹10,000 avg deposit, 500+ deposits, ₹5,00,000+
+    // total, ₹500 avg bet) came from a different, much larger project and
+    // produced ZERO eligible users against this project's real data when
+    // tried as-is (confirmed against live daily-records-db 2026-07-23).
+    // Recalibrated to this project's own engaged-user (VIP 2+) averages:
+    // avg lifetime deposit ~₹473 -> ₹500, avg deposit count ~20, avg
+    // lifetime total deposit ~₹12,286 -> ₹12,000, avg real-gameplay bet
+    // size (last 15 days) ~₹40. Active-within-days (15 high / 10 low)
+    // kept as-is — those already match this codebase's own Active Users
+    // card exactly (VIP 5-15 within 15 days / VIP 2-4 within 10 days), so
+    // they're this project's own convention, not a borrowed number.
+    if (url.pathname === "/api/dashboard/platform-analysis/game-activity/roller-active" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const tier = url.searchParams.get("tier") === "low" ? "low" : "high";
+      const period = ["day", "week", "month"].includes(url.searchParams.get("period") || "") ? url.searchParams.get("period")! : "15days";
+      const anchorDate = url.searchParams.get("date") || todayIST();
+      const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
+      const pageSize = 10;
+      const addDaysGA = (dateStr: string, n: number) => {
+        const d = new Date(dateStr + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + n);
+        return d.toISOString().slice(0, 10);
+      };
+      const rangeStart =
+        period === "day" ? anchorDate
+        : period === "week" ? addDaysGA(anchorDate, -6)
+        : period === "month" ? addDaysGA(anchorDate, -29)
+        : addDaysGA(anchorDate, -14); // "15days"
+
+      const [minVip, maxVip, maxInactiveDays, avgDepositCmp, depositCountCmp, totalDepositCmp, avgBetCmp] =
+        tier === "high"
+          ? [7, 14, 15, ">=", ">=", ">=", ">"] as const
+          : [2, 6, 10, "<", "<", "<", "<"] as const;
+
+      const CTE = `WITH elig AS (
+           SELECT user_id, total_deposit, user_balance, last_active_time, deposit_count,
+                  COALESCE(assigned_agent, 'Unassigned') as agent,
+                  (total_deposit * 1.0 / NULLIF(deposit_count, 0)) as avg_lifetime_deposit,
+                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days,
+                  ${vipLevelCase("total_deposit")} as vip
+           FROM users
+           WHERE total_deposit IS NOT NULL AND deposit_count IS NOT NULL AND last_active_time IS NOT NULL
+             AND COALESCE(is_banned, 0) = 0
+         ),
+         gameplay AS (
+           SELECT user_id, game_name, amount
+           FROM wallet_details
+           WHERE game_name IS NOT NULL AND game_name != ''
+             AND source_name IS NOT NULL AND source_name != ''
+             AND date(create_time) BETWEEN ? AND ?
+         ),
+         bet_agg AS (
+           SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
+         ),
+         top_game AS (
+           SELECT user_id, game_name,
+                  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
+           FROM gameplay GROUP BY user_id, game_name
+         ),
+         qualified AS (
+           SELECT e.user_id, e.vip, e.agent, e.total_deposit, e.user_balance,
+                  COALESCE(tg.game_name, '—') as top_game_played
+           FROM elig e
+           JOIN bet_agg b ON b.user_id = e.user_id
+           LEFT JOIN top_game tg ON tg.user_id = e.user_id AND tg.rn = 1
+           WHERE e.vip BETWEEN ${minVip} AND ${maxVip}
+             AND e.avg_lifetime_deposit ${avgDepositCmp} 500
+             AND e.deposit_count ${depositCountCmp} 20
+             AND e.total_deposit ${totalDepositCmp} 12000
+             AND b.avg_bet ${avgBetCmp} 40
+             AND e.inactive_days BETWEEN 0 AND ${maxInactiveDays}
+         )`;
+      const binds = [rangeStart, anchorDate];
+
+      const countRow = await env.daily_records_db
+        .prepare(`${CTE} SELECT COUNT(*) as c FROM qualified`)
+        .bind(...binds)
+        .first<{ c: number }>();
+      const total = countRow?.c ?? 0;
+
+      const rows = await env.daily_records_db
+        .prepare(
+          `${CTE}
+           SELECT user_id, vip, agent, total_deposit, user_balance, top_game_played
+           FROM qualified
+           ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
+        )
+        .bind(...binds, pageSize, (page - 1) * pageSize)
+        .all();
+
+      return Response.json({
+        tier, period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
         page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
         rows: rows.results,
       });
