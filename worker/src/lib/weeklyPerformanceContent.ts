@@ -141,9 +141,16 @@ function wpMetricRow(label, last, current, isCurrency) {
 async function wpLoad() {
   const statusEl = document.getElementById('wpStatus');
   try {
-    const res = await fetch('/api/dashboard/platform-analysis/weekly-performance');
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (window.__paBootstrapData && window.__paBootstrapData.weeklyPerformance) {
+      d = window.__paBootstrapData.weeklyPerformance;
+      delete window.__paBootstrapData.weeklyPerformance;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/weekly-performance');
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     const curWeekNominalEnd = wpAddDays(d.currentWeek.start, 6);
     document.getElementById('wpRangeBadge').textContent =
