@@ -1,57 +1,62 @@
 import type { Env, SourceName } from "./types";
 import { extractCommonFields, extractUserProfileFields, type ParsedRow } from "./excelParse";
 
-// After the Daily Records DB is updated, refresh the affected users' summary
-// columns in the Master DB (total_deposit, total_withdrawal, deposit_count).
-// D1 has no cross-database joins, so this reads aggregates from
-// daily_records_db and writes them into master_db in two separate steps.
-// Scoped to only the user_ids touched by this sync (not a full-table
-// re-aggregation) to keep this cheap regardless of how large the tables get.
-export async function updateMasterAggregatesForUsers(
+// "Settled" definition shared by every caller that needs to know whether a
+// deposit/withdrawal row should count toward a user's lifetime total — kept
+// in sync by hand with etl/sync_engine.py's _is_complete (the Python ETL
+// this TS path mirrors): deposits use the text status 'COMPLETE';
+// withdrawals use numeric status 2 (0=review, 1=processing, 2=complete,
+// 3=rejected, 4=failed).
+export function isMasterAggregateComplete(table: "deposits" | "withdrawals", status: string | null): boolean {
+  if (table === "deposits") return status === "COMPLETE";
+  if (table === "withdrawals") {
+    const n = Number(status);
+    return !Number.isNaN(n) && n === 2;
+  }
+  return false;
+}
+
+// Applies pre-computed per-user net deltas (from write-chunk's before/after
+// status comparison — see that handler's comment) to users.total_deposit /
+// deposit_count (or total_withdrawal) via INCREMENT, never replace.
+//
+// This replaces a prior version that recomputed SUM(amount)/COUNT(*) over
+// the whole daily_records_db table for each touched user and overwrote the
+// column outright. That had two live bugs, confirmed against production
+// data 2026-07-25 (199 users, ~Rs 6.4L in phantom totals): (1) no status
+// filter, so PROCESS/FAILED/rejected rows counted toward "lifetime deposit"
+// exactly like COMPLETE ones; (2) daily_records_db only retains a rolling
+// ~35-day window, so recomputing from it also silently discarded any
+// history older than that on every run — the exact regression
+// etl/sync_engine.py's own comments describe deliberately avoiding when the
+// Python ETL was redesigned around delta-tracking; this TS fallback path
+// was never updated to match.
+export async function applyMasterAggregateDeltas(
   env: Env,
   table: "deposits" | "withdrawals",
-  userIds: number[]
+  deltas: Record<number, { amount: number; count: number }>
 ): Promise<number> {
-  const uniqueIds = [...new Set(userIds.filter((id) => Number.isFinite(id)))];
-  if (uniqueIds.length === 0) return 0;
+  const entries = Object.entries(deltas).filter(([, d]) => d.amount !== 0 || d.count !== 0);
+  if (entries.length === 0) return 0;
 
   const column = table === "deposits" ? "total_deposit" : "total_withdrawal";
   const countColumn = table === "deposits" ? "deposit_count" : null;
+  const now = new Date().toISOString();
 
-  // Chunk to stay well under D1's practical bound-parameter ceiling for a
-  // single IN clause (same lesson learned in upsert.ts: keep this small).
   const CHUNK = 100;
   let updated = 0;
-
-  for (let i = 0; i < uniqueIds.length; i += CHUNK) {
-    const chunk = uniqueIds.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const sums = await env.daily_records_db
-      .prepare(
-        `SELECT user_id, SUM(amount) as total, COUNT(*) as cnt FROM ${table}
-         WHERE user_id IN (${placeholders}) GROUP BY user_id`
-      )
-      .bind(...chunk)
-      .all<{ user_id: number; total: number; cnt: number }>();
-
-    const statements = sums.results.map((row) => {
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const chunk = entries.slice(i, i + CHUNK);
+    const statements = chunk.map(([userId, d]) => {
       const setClause = countColumn
-        ? `${column} = ?, ${countColumn} = ?, update_time = ?`
-        : `${column} = ?, update_time = ?`;
-      const binds = countColumn
-        ? [row.total, row.cnt, new Date().toISOString(), row.user_id]
-        : [row.total, new Date().toISOString(), row.user_id];
-      return env.daily_records_db
-        .prepare(`UPDATE users SET ${setClause} WHERE user_id = ?`)
-        .bind(...binds);
+        ? `${column} = COALESCE(${column}, 0) + ?, ${countColumn} = COALESCE(${countColumn}, 0) + ?, update_time = ?`
+        : `${column} = COALESCE(${column}, 0) + ?, update_time = ?`;
+      const binds = countColumn ? [d.amount, d.count, now, Number(userId)] : [d.amount, now, Number(userId)];
+      return env.daily_records_db.prepare(`UPDATE users SET ${setClause} WHERE user_id = ?`).bind(...binds);
     });
-
-    if (statements.length > 0) {
-      await env.daily_records_db.batch(statements);
-      updated += statements.length;
-    }
+    await env.daily_records_db.batch(statements);
+    updated += statements.length;
   }
-
   return updated;
 }
 

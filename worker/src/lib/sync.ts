@@ -1,7 +1,7 @@
 import type { Env, SourceName, SyncResult } from "./types";
 import { fetchExportRows } from "./exportClient";
 import { upsertRowsChunked, tableForSource } from "./chunkedUpsert";
-import { updateMasterAggregatesForUsers, updateMasterProfilesForUsers } from "./aggregate";
+import { applyMasterAggregateDeltas, updateMasterProfilesForUsers } from "./aggregate";
 
 const SOURCES: Exclude<SourceName, "manual_upload">[] = ["wallet", "deposit", "withdraw"];
 
@@ -34,17 +34,20 @@ export async function syncSource(source: Exclude<SourceName, "manual_upload">, e
   const startedAt = new Date().toISOString();
   try {
     const rows = await fetchExportRows(source, env);
-    const { fetched, missingBefore, upserted, userIds } = await upsertRowsChunked(tableForSource(source), rows, env);
+    const { fetched, missingBefore, upserted, userDeltas } = await upsertRowsChunked(tableForSource(source), rows, env);
 
     // Step 2 of the requested flow: once the Daily Records DB is updated,
-    // refresh the Master DB's per-user totals from it. Only deposit/
-    // withdraw map to a Master DB aggregate column (total_deposit,
-    // total_withdrawal); wallet_details has no equivalent column to refresh
-    // yet, so it's skipped here — revisit once that endpoint is unblocked
-    // and its field meaning is confirmed.
+    // apply this batch's per-user COMPLETE-only net deltas (computed in
+    // write-chunk from each row's before/after status) to the Master DB's
+    // total_deposit/total_withdrawal/deposit_count — an increment, never a
+    // recompute-and-replace (see applyMasterAggregateDeltas for why that
+    // matters). Only deposit/withdraw map to a Master DB aggregate column;
+    // wallet_details has no equivalent column to refresh yet, so it's
+    // skipped here — revisit once that endpoint is unblocked and its field
+    // meaning is confirmed.
     if (source === "deposit" || source === "withdraw") {
       const table = source === "deposit" ? "deposits" : "withdrawals";
-      await updateMasterAggregatesForUsers(env, table, userIds);
+      await applyMasterAggregateDeltas(env, table, userDeltas);
     }
 
     // Same profile fields the Python ETL keeps current (phone/mark/
