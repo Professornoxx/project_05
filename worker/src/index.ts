@@ -2059,55 +2059,59 @@ export default {
       const newUserFilter = newOnly ? `AND u.create_time >= ?` : "";
       const newUserArgs = newOnly ? [threeDaysAgoStr] : [];
 
-      const CTE = `WITH today_dep AS (
-          SELECT user_id, SUM(amount) as dep FROM deposits
-          WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
-        ),
-        today_wd AS (
-          SELECT user_id, SUM(amount) as wd FROM withdrawals
-          WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
-        ),
-        last_dep AS (
-          SELECT user_id, MAX(create_time) as t FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
-        ),
-        last_wd AS (
-          SELECT user_id, MAX(create_time) as t FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
-        )`;
+      const payload = await cachedJson(env, `platform-analysis:profit-users:${anchorDate}:${newOnly}:${page}`, async () => {
+        const CTE = `WITH today_dep AS (
+            SELECT user_id, SUM(amount) as dep FROM deposits
+            WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+          ),
+          today_wd AS (
+            SELECT user_id, SUM(amount) as wd FROM withdrawals
+            WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+          ),
+          last_dep AS (
+            SELECT user_id, MAX(create_time) as t FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+          ),
+          last_wd AS (
+            SELECT user_id, MAX(create_time) as t FROM withdrawals WHERE CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+          )`;
 
-      const countRow = await env.daily_records_db
-        .prepare(`SELECT COUNT(*) as c FROM users u WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}`)
-        .bind(...newUserArgs)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+        const countRow = await env.daily_records_db
+          .prepare(`SELECT COUNT(*) as c FROM users u WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}`)
+          .bind(...newUserArgs)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT u.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  ${vipLevelCase("u.total_deposit")} as vip,
-                  COALESCE(td.dep, 0) as dep_today, u.user_balance as wallet_bal,
-                  COALESCE(tw.wd, 0) as wd_today,
-                  COALESCE(td.dep, 0) - COALESCE(tw.wd, 0) as net_dep,
-                  ld.t as last_dep, lw.t as last_wd
-           FROM users u
-           LEFT JOIN today_dep td ON td.user_id = u.user_id
-           LEFT JOIN today_wd tw ON tw.user_id = u.user_id
-           LEFT JOIN last_dep ld ON ld.user_id = u.user_id
-           LEFT JOIN last_wd lw ON lw.user_id = u.user_id
-           WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}
-           ORDER BY u.user_balance DESC LIMIT ? OFFSET ?`
-        )
-        .bind(anchorDate, anchorDate, ...newUserArgs, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT u.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                    ${vipLevelCase("u.total_deposit")} as vip,
+                    COALESCE(td.dep, 0) as dep_today, u.user_balance as wallet_bal,
+                    COALESCE(tw.wd, 0) as wd_today,
+                    COALESCE(td.dep, 0) - COALESCE(tw.wd, 0) as net_dep,
+                    ld.t as last_dep, lw.t as last_wd
+             FROM users u
+             LEFT JOIN today_dep td ON td.user_id = u.user_id
+             LEFT JOIN today_wd tw ON tw.user_id = u.user_id
+             LEFT JOIN last_dep ld ON ld.user_id = u.user_id
+             LEFT JOIN last_wd lw ON lw.user_id = u.user_id
+             WHERE u.user_balance IS NOT NULL AND u.is_banned = 0 ${newUserFilter}
+             ORDER BY u.user_balance DESC LIMIT ? OFFSET ?`
+          )
+          .bind(anchorDate, anchorDate, ...newUserArgs, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        date: anchorDate,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          date: anchorDate,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 1, panel 2: Suspicious Withdraw Users.
@@ -2132,56 +2136,70 @@ export default {
       const threeDaysAgo = new Date(anchorDate + "T00:00:00Z");
       threeDaysAgo.setUTCDate(threeDaysAgo.getUTCDate() - 3);
       const threeDaysAgoStr = threeDaysAgo.toISOString().slice(0, 10);
+      // Exclusive upper bound for the raw create_time range below (day-after
+      // anchorDate) — lets games3d filter on the bare TEXT column instead of
+      // wrapping it in date(...), which was defeating idx_wallet_details_
+      // create_time and forcing a full scan of a 2M+ row table on every
+      // load (confirmed via EXPLAIN QUERY PLAN 2026-07-25: SCAN -> SEARCH
+      // USING INDEX after this change). dep3d/wd3d stay on deposits/
+      // withdrawals, both small enough (<30k rows) that this doesn't matter.
+      const anchorDateExclusive = new Date(anchorDate + "T00:00:00Z");
+      anchorDateExclusive.setUTCDate(anchorDateExclusive.getUTCDate() + 1);
+      const anchorDateExclusiveStr = anchorDateExclusive.toISOString().slice(0, 10);
 
-      const CTE = `WITH dep3d AS (
-          SELECT user_id, SUM(amount) as dep FROM deposits
-          WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
-          GROUP BY user_id HAVING SUM(amount) >= 1000
-        ),
-        wd3d AS (
-          SELECT user_id, SUM(amount) as wd FROM withdrawals
-          WHERE date(create_time) BETWEEN ? AND ? AND CAST(status AS REAL) IN (0,1,2) AND user_id IS NOT NULL
-          GROUP BY user_id
-        ),
-        games3d AS (
-          SELECT user_id, COUNT(*) as games FROM wallet_details
-          WHERE date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
-          GROUP BY user_id
-        ),
-        flagged AS (
-          SELECT d.user_id, d.dep, w.wd, COALESCE(g.games, 0) as games
-          FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
-          LEFT JOIN games3d g ON g.user_id = d.user_id
-          WHERE COALESCE(g.games, 0) < 50
-            AND d.user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
-        )`;
-      const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate];
+      const payload = await cachedJson(env, `platform-analysis:suspicious-withdrawals:${anchorDate}:${page}`, async () => {
+        const CTE = `WITH dep3d AS (
+            SELECT user_id, SUM(amount) as dep FROM deposits
+            WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+            GROUP BY user_id HAVING SUM(amount) >= 1000
+          ),
+          wd3d AS (
+            SELECT user_id, SUM(amount) as wd FROM withdrawals
+            WHERE date(create_time) BETWEEN ? AND ? AND CAST(status AS REAL) IN (0,1,2) AND user_id IS NOT NULL
+            GROUP BY user_id
+          ),
+          games3d AS (
+            SELECT user_id, COUNT(*) as games FROM wallet_details
+            WHERE create_time >= ? AND create_time < ? AND user_id IS NOT NULL
+            GROUP BY user_id
+          ),
+          flagged AS (
+            SELECT d.user_id, d.dep, w.wd, COALESCE(g.games, 0) as games
+            FROM dep3d d JOIN wd3d w ON w.user_id = d.user_id
+            LEFT JOIN games3d g ON g.user_id = d.user_id
+            WHERE COALESCE(g.games, 0) < 50
+              AND d.user_id NOT IN (SELECT user_id FROM users WHERE is_banned = 1)
+          )`;
+        const cteArgs = [threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDate, threeDaysAgoStr, anchorDateExclusiveStr];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM flagged`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM flagged`)
+          .bind(...cteArgs)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  ${vipLevelCase("u.total_deposit")} as vip, f.dep as deposit_3d, f.wd as withdraw_3d, f.games as games_3d
-           FROM flagged f LEFT JOIN users u ON u.user_id = f.user_id
-           ORDER BY f.wd DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                    ${vipLevelCase("u.total_deposit")} as vip, f.dep as deposit_3d, f.wd as withdraw_3d, f.games as games_3d
+             FROM flagged f LEFT JOIN users u ON u.user_id = f.user_id
+             ORDER BY f.wd DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        date: anchorDate,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          date: anchorDate,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 2, panel 1: Channel performance — 4-day
@@ -2301,39 +2319,43 @@ export default {
       // No FULL OUTER JOIN (not reliably supported here) — union the two
       // user-id sets instead, since a user might withdraw without
       // depositing that day (or vice versa) and still needs to be counted.
-      const rows = await env.daily_records_db
-        .prepare(
-          `WITH day_dep AS (
-             SELECT user_id, SUM(amount) as amt, MIN(region) as region FROM deposits
-             WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
-           ),
-           day_wd AS (
-             SELECT user_id, SUM(amount) as amt FROM withdrawals
-             WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
-           ),
-           active_users AS (
-             SELECT user_id FROM day_dep
-             UNION
-             SELECT user_id FROM day_wd
-           ),
-           combined AS (
-             SELECT au.user_id, COALESCE(dd.amt, 0) as dep, COALESCE(dw.amt, 0) as wd, dd.region as region
-             FROM active_users au
-             LEFT JOIN day_dep dd ON dd.user_id = au.user_id
-             LEFT JOIN day_wd dw ON dw.user_id = au.user_id
-           )
-           SELECT ${groupExpr} as ${label},
-                  COALESCE(SUM(c.dep), 0) as total_deposit,
-                  COALESCE(SUM(c.wd), 0) as total_withdrawal,
-                  COALESCE(SUM(c.dep), 0) - COALESCE(SUM(c.wd), 0) as net_revenue,
-                  COUNT(*) as users
-           FROM combined c LEFT JOIN users u ON u.user_id = c.user_id
-           GROUP BY ${groupExpr} ORDER BY net_revenue DESC LIMIT 20`
-        )
-        .bind(anchorDate, anchorDate)
-        .all();
+      const payload = await cachedJson(env, `platform-analysis:net-revenue:${anchorDate}:${by}`, async () => {
+        const rows = await env.daily_records_db
+          .prepare(
+            `WITH day_dep AS (
+               SELECT user_id, SUM(amount) as amt, MIN(region) as region FROM deposits
+               WHERE date(create_time) = ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+             ),
+             day_wd AS (
+               SELECT user_id, SUM(amount) as amt FROM withdrawals
+               WHERE date(create_time) = ? AND CAST(status AS REAL) = 2 AND user_id IS NOT NULL GROUP BY user_id
+             ),
+             active_users AS (
+               SELECT user_id FROM day_dep
+               UNION
+               SELECT user_id FROM day_wd
+             ),
+             combined AS (
+               SELECT au.user_id, COALESCE(dd.amt, 0) as dep, COALESCE(dw.amt, 0) as wd, dd.region as region
+               FROM active_users au
+               LEFT JOIN day_dep dd ON dd.user_id = au.user_id
+               LEFT JOIN day_wd dw ON dw.user_id = au.user_id
+             )
+             SELECT ${groupExpr} as ${label},
+                    COALESCE(SUM(c.dep), 0) as total_deposit,
+                    COALESCE(SUM(c.wd), 0) as total_withdrawal,
+                    COALESCE(SUM(c.dep), 0) - COALESCE(SUM(c.wd), 0) as net_revenue,
+                    COUNT(*) as users
+             FROM combined c LEFT JOIN users u ON u.user_id = c.user_id
+             GROUP BY ${groupExpr} ORDER BY net_revenue DESC LIMIT 20`
+          )
+          .bind(anchorDate, anchorDate)
+          .all();
 
-      return Response.json({ date: anchorDate, by, rows: rows.results });
+        return { date: anchorDate, by, rows: rows.results };
+      });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 3: Bonus Claim Report. "Bonus Category" =
@@ -2364,44 +2386,58 @@ export default {
         if (period === "month") { d.setUTCDate(d.getUTCDate() - 29); return d.toISOString().slice(0, 10); }
         return anchorDate;
       })();
+      // Exclusive upper bound (day after anchorDate) so bonus_claims can
+      // filter on the raw create_time TEXT column instead of date(...),
+      // which was defeating idx_wallet_details_create_time and forcing a
+      // full scan of a 2M+ row table (see suspicious-withdrawals above for
+      // the same fix and the EXPLAIN QUERY PLAN confirmation).
+      const rangeEndExclusive = (() => {
+        const d = new Date(anchorDate + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() + 1);
+        return d.toISOString().slice(0, 10);
+      })();
 
-      const CTE = `WITH bonus_claims AS (
-          SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
-          FROM wallet_details
-          WHERE game_name IS NOT NULL AND game_name != ''
-            AND (source_name IS NULL OR source_name = '')
-            AND date(create_time) BETWEEN ? AND ? AND user_id IS NOT NULL
-          GROUP BY user_id, game_name
-        ),
-        category_totals AS (
-          SELECT category, COUNT(*) as claimed_users, COALESCE(SUM(claim_amount), 0) as total_bonus
-          FROM bonus_claims GROUP BY category
-        ),
-        dep_after AS (
-          SELECT bc.user_id, bc.category, SUM(d.amount) as dep_amt
-          FROM bonus_claims bc
-          JOIN deposits d ON d.user_id = bc.user_id AND d.status = 'COMPLETE' AND d.create_time > bc.first_claim_time
-          GROUP BY bc.user_id, bc.category
-        ),
-        dep_after_totals AS (
-          SELECT category, COUNT(*) as deposited_after, COALESCE(SUM(dep_amt), 0) as deposit_amount
-          FROM dep_after GROUP BY category
-        )`;
+      const payload = await cachedJson(env, `platform-analysis:bonus-claims:${anchorDate}:${period}`, async () => {
+        const CTE = `WITH bonus_claims AS (
+            SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
+            FROM wallet_details
+            WHERE game_name IS NOT NULL AND game_name != ''
+              AND (source_name IS NULL OR source_name = '')
+              AND create_time >= ? AND create_time < ? AND user_id IS NOT NULL
+            GROUP BY user_id, game_name
+          ),
+          category_totals AS (
+            SELECT category, COUNT(*) as claimed_users, COALESCE(SUM(claim_amount), 0) as total_bonus
+            FROM bonus_claims GROUP BY category
+          ),
+          dep_after AS (
+            SELECT bc.user_id, bc.category, SUM(d.amount) as dep_amt
+            FROM bonus_claims bc
+            JOIN deposits d ON d.user_id = bc.user_id AND d.status = 'COMPLETE' AND d.create_time > bc.first_claim_time
+            GROUP BY bc.user_id, bc.category
+          ),
+          dep_after_totals AS (
+            SELECT category, COUNT(*) as deposited_after, COALESCE(SUM(dep_amt), 0) as deposit_amount
+            FROM dep_after GROUP BY category
+          )`;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT ct.category, ct.claimed_users, ct.total_bonus,
-                  COALESCE(dat.deposited_after, 0) as deposited_after,
-                  COALESCE(dat.deposit_amount, 0) as deposit_amount,
-                  (100.0 * COALESCE(dat.deposited_after, 0) / ct.claimed_users) as pct
-           FROM category_totals ct LEFT JOIN dep_after_totals dat ON dat.category = ct.category
-           ORDER BY ct.claimed_users DESC LIMIT 50`
-        )
-        .bind(rangeStart, anchorDate)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT ct.category, ct.claimed_users, ct.total_bonus,
+                    COALESCE(dat.deposited_after, 0) as deposited_after,
+                    COALESCE(dat.deposit_amount, 0) as deposit_amount,
+                    (100.0 * COALESCE(dat.deposited_after, 0) / ct.claimed_users) as pct
+             FROM category_totals ct LEFT JOIN dep_after_totals dat ON dat.category = ct.category
+             ORDER BY ct.claimed_users DESC LIMIT 50`
+          )
+          .bind(rangeStart, rangeEndExclusive)
+          .all();
 
-      return Response.json({ date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results });
+        return { date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results };
+      });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 0: Weekly Performance — This Week vs Last
@@ -2460,6 +2496,7 @@ export default {
       const rangeStart = lastWeekStart;
       const rangeEnd = anchorDate;
 
+      const payload = await cachedJson(env, `platform-analysis:weekly-performance:${anchorDate}`, async () => {
       // Same per-day dep/wd CTEs as new-vs-old below, just bounded to the
       // 2-week window and returned as one row per day instead of paginated.
       const dailyRows = await env.daily_records_db
@@ -2604,19 +2641,22 @@ export default {
         };
       };
 
-      return Response.json({
-        date: anchorDate,
-        currentWeek: { start: curWeekStart, end: anchorDate, daysElapsed: curWeekDays.length },
-        lastWeek: { start: lastWeekStart, end: lastWeekEnd },
-        metrics: { current: metricsCurrent, last: metricsLast },
-        retention: { current: retentionBucket(curWeekDays), last: retentionBucket(lastWeekDays) },
-        targets: {
-          oldUsersCount: { target: TARGETS.oldUsersCount, actual: metricsCurrent.oldUsersCount },
-          avgDepositOldUsers: { target: TARGETS.avgDepositOldUsers, actual: metricsCurrent.avgDepositOld },
-          avgTotalDepositDay: { target: TARGETS.avgTotalDepositDay, actual: metricsCurrent.totalDepositDay },
-          totalDepositorCountDay: { target: TARGETS.totalDepositorCountDay, actual: metricsCurrent.totalDepositorCountDay },
-        },
+        return {
+          date: anchorDate,
+          currentWeek: { start: curWeekStart, end: anchorDate, daysElapsed: curWeekDays.length },
+          lastWeek: { start: lastWeekStart, end: lastWeekEnd },
+          metrics: { current: metricsCurrent, last: metricsLast },
+          retention: { current: retentionBucket(curWeekDays), last: retentionBucket(lastWeekDays) },
+          targets: {
+            oldUsersCount: { target: TARGETS.oldUsersCount, actual: metricsCurrent.oldUsersCount },
+            avgDepositOldUsers: { target: TARGETS.avgDepositOldUsers, actual: metricsCurrent.avgDepositOld },
+            avgTotalDepositDay: { target: TARGETS.avgTotalDepositDay, actual: metricsCurrent.totalDepositDay },
+            totalDepositorCountDay: { target: TARGETS.totalDepositorCountDay, actual: metricsCurrent.totalDepositorCountDay },
+          },
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 4, tab 1: New vs Old User Analysis — Daily
@@ -2634,6 +2674,7 @@ export default {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
 
+      const payload = await cachedJson(env, `platform-analysis:new-vs-old:${page}`, async () => {
       const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(DISTINCT date(create_time)) as c FROM deposits WHERE status = 'COMPLETE' AND user_id IS NOT NULL`)
         .first<{ c: number }>();
@@ -2687,13 +2728,16 @@ export default {
         .bind(pageSize, (page - 1) * pageSize)
         .all();
 
-      return Response.json({
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 4, tab 2: New User 3-Day Retention. Cohort
@@ -2711,6 +2755,7 @@ export default {
       const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10) || 1);
       const pageSize = 10;
 
+      const payload = await cachedJson(env, `platform-analysis:new-user-retention:${page}`, async () => {
       const countRow = await env.daily_records_db
         .prepare(`SELECT COUNT(DISTINCT date(create_time)) as c FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL`)
         .first<{ c: number }>();
@@ -2751,13 +2796,16 @@ export default {
         .bind(pageSize, (page - 1) * pageSize)
         .all();
 
-      return Response.json({
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis (last section): Region vs VIP Depositor Matrix.
@@ -2830,38 +2878,37 @@ export default {
 
       const VIP_LEVEL_CAPPED = `MIN(10, ${vipLevelCase("COALESCE(u.total_deposit, 0)")})`;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `WITH day_dep AS (
-             SELECT DISTINCT d.user_id, COALESCE(u.city, d.region, 'Unknown') as region,
-                    ${VIP_LEVEL_CAPPED} as vip_level
-             FROM deposits d LEFT JOIN users u ON u.user_id = d.user_id
-             WHERE d.status = 'COMPLETE' AND d.user_id IS NOT NULL AND ${dateClause}
-           )
-           SELECT region, vip_level, COUNT(DISTINCT user_id) as cnt
-           FROM day_dep WHERE vip_level >= 1
-           GROUP BY region, vip_level`
-        )
-        .bind(...dateBind)
-        .all<{ region: string; vip_level: number; cnt: number }>();
+      const payload = await cachedJson(env, `platform-analysis:region-vip-matrix:${mode}:${dateBind.join(",")}`, async () => {
+        const rows = await env.daily_records_db
+          .prepare(
+            `WITH day_dep AS (
+               SELECT DISTINCT d.user_id, COALESCE(u.city, d.region, 'Unknown') as region,
+                      ${VIP_LEVEL_CAPPED} as vip_level
+               FROM deposits d LEFT JOIN users u ON u.user_id = d.user_id
+               WHERE d.status = 'COMPLETE' AND d.user_id IS NOT NULL AND ${dateClause}
+             )
+             SELECT region, vip_level, COUNT(DISTINCT user_id) as cnt
+             FROM day_dep WHERE vip_level >= 1
+             GROUP BY region, vip_level`
+          )
+          .bind(...dateBind)
+          .all<{ region: string; vip_level: number; cnt: number }>();
 
-      const byRegion = new Map<string, { levels: number[]; total: number }>();
-      for (const r of rows.results) {
-        if (!byRegion.has(r.region)) byRegion.set(r.region, { levels: new Array(11).fill(0), total: 0 });
-        const entry = byRegion.get(r.region)!;
-        entry.levels[r.vip_level] = r.cnt;
-        entry.total += r.cnt;
-      }
-      const regions = Array.from(byRegion.entries())
-        .map(([region, entry]) => ({ region, levels: entry.levels.slice(1, 11), total: entry.total }))
-        .sort((a, b) => b.total - a.total);
+        const byRegion = new Map<string, { levels: number[]; total: number }>();
+        for (const r of rows.results) {
+          if (!byRegion.has(r.region)) byRegion.set(r.region, { levels: new Array(11).fill(0), total: 0 });
+          const entry = byRegion.get(r.region)!;
+          entry.levels[r.vip_level] = r.cnt;
+          entry.total += r.cnt;
+        }
+        const regions = Array.from(byRegion.entries())
+          .map(([region, entry]) => ({ region, levels: entry.levels.slice(1, 11), total: entry.total }))
+          .sort((a, b) => b.total - a.total);
 
-      return Response.json({
-        mode,
-        date: anchorDate,
-        range: rangeLabel,
-        regions,
+        return { mode, date: anchorDate, range: rangeLabel, regions };
       });
+
+      return Response.json(payload);
     }
 
     // Platform Analysis section 5 (last): Game Activity — "New" users
@@ -2895,53 +2942,63 @@ export default {
         : period === "month" ? addDaysGA(anchorDate, -29)
         : addDaysGA(anchorDate, -14); // "15days"
       const newUserCutoff = addDaysGA(anchorDate, -32); // "last 33 days" incl. anchorDate
+      // Exclusive upper bound so gameplay can filter on the raw create_time
+      // TEXT column instead of date(...), which was defeating
+      // idx_wallet_details_create_time and forcing a full scan of a 2M+ row
+      // table on every load (confirmed via EXPLAIN QUERY PLAN 2026-07-25:
+      // SCAN -> SEARCH USING INDEX after this change).
+      const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
-      const CTE = `WITH first_dep AS (
-           SELECT user_id, MIN(date(create_time)) as first_dep_date
-           FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
-         ),
-         new_users AS (
-           SELECT fd.user_id FROM first_dep fd
-           JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
-           WHERE fd.first_dep_date BETWEEN ? AND ?
-         ),
-         gameplay AS (
-           SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
-           FROM wallet_details wd
-           JOIN new_users nu ON nu.user_id = wd.user_id
-           WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
-             AND wd.source_name IS NOT NULL AND wd.source_name != ''
-             AND date(wd.create_time) BETWEEN ? AND ?
-         ),
-         agg AS (
-           SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
-           FROM gameplay GROUP BY user_id, game_name
-         )`;
-      const binds = [newUserCutoff, anchorDate, rangeStart, anchorDate];
+      const payload = await cachedJson(env, `platform-analysis:game-activity:top-games:${period}:${anchorDate}:${page}`, async () => {
+        const CTE = `WITH first_dep AS (
+             SELECT user_id, MIN(date(create_time)) as first_dep_date
+             FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           new_users AS (
+             SELECT fd.user_id FROM first_dep fd
+             JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
+             WHERE fd.first_dep_date BETWEEN ? AND ?
+           ),
+           gameplay AS (
+             SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+             FROM wallet_details wd
+             JOIN new_users nu ON nu.user_id = wd.user_id
+             WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+               AND wd.source_name IS NOT NULL AND wd.source_name != ''
+               AND wd.create_time >= ? AND wd.create_time < ?
+           ),
+           agg AS (
+             SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
+             FROM gameplay GROUP BY user_id, game_name
+           )`;
+        const binds = [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM agg`)
-        .bind(...binds)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM agg`)
+          .bind(...binds)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT a.user_id, a.game_name, a.total_bet, a.last_active,
-                  ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
-                  COALESCE(u.assigned_agent, 'Unassigned') as agent
-           FROM agg a LEFT JOIN users u ON u.user_id = a.user_id
-           ORDER BY a.total_bet DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...binds, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT a.user_id, a.game_name, a.total_bet, a.last_active,
+                    ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
+                    COALESCE(u.assigned_agent, 'Unassigned') as agent
+             FROM agg a LEFT JOIN users u ON u.user_id = a.user_id
+             ORDER BY a.total_bet DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...binds, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
-        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+          page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     if (url.pathname === "/api/dashboard/platform-analysis/game-activity/highest-bet" && request.method === "GET") {
@@ -2963,55 +3020,60 @@ export default {
         : period === "month" ? addDaysGA(anchorDate, -29)
         : addDaysGA(anchorDate, -14);
       const newUserCutoff = addDaysGA(anchorDate, -32);
+      const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
-      const CTE = `WITH first_dep AS (
-           SELECT user_id, MIN(date(create_time)) as first_dep_date
-           FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
-         ),
-         new_users AS (
-           SELECT fd.user_id FROM first_dep fd
-           JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
-           WHERE fd.first_dep_date BETWEEN ? AND ?
-         ),
-         gameplay AS (
-           SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
-           FROM wallet_details wd
-           JOIN new_users nu ON nu.user_id = wd.user_id
-           WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
-             AND wd.source_name IS NOT NULL AND wd.source_name != ''
-             AND date(wd.create_time) BETWEEN ? AND ?
-         ),
-         ranked AS (
-           SELECT user_id, game_name, amount, create_time,
-                  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
-           FROM gameplay
-         )`;
-      const binds = [newUserCutoff, anchorDate, rangeStart, anchorDate];
+      const payload = await cachedJson(env, `platform-analysis:game-activity:highest-bet:${period}:${anchorDate}:${page}`, async () => {
+        const CTE = `WITH first_dep AS (
+             SELECT user_id, MIN(date(create_time)) as first_dep_date
+             FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
+           ),
+           new_users AS (
+             SELECT fd.user_id FROM first_dep fd
+             JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
+             WHERE fd.first_dep_date BETWEEN ? AND ?
+           ),
+           gameplay AS (
+             SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+             FROM wallet_details wd
+             JOIN new_users nu ON nu.user_id = wd.user_id
+             WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+               AND wd.source_name IS NOT NULL AND wd.source_name != ''
+               AND wd.create_time >= ? AND wd.create_time < ?
+           ),
+           ranked AS (
+             SELECT user_id, game_name, amount, create_time,
+                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
+             FROM gameplay
+           )`;
+        const binds = [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM ranked WHERE rn = 1`)
-        .bind(...binds)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM ranked WHERE rn = 1`)
+          .bind(...binds)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT r.user_id, r.game_name, r.amount as highest_bet, r.create_time as last_active,
-                  ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
-                  COALESCE(u.assigned_agent, 'Unassigned') as agent
-           FROM ranked r LEFT JOIN users u ON u.user_id = r.user_id
-           WHERE r.rn = 1
-           ORDER BY r.amount DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...binds, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT r.user_id, r.game_name, r.amount as highest_bet, r.create_time as last_active,
+                    ${vipLevelCase("COALESCE(u.total_deposit, 0)")} as vip,
+                    COALESCE(u.assigned_agent, 'Unassigned') as agent
+             FROM ranked r LEFT JOIN users u ON u.user_id = r.user_id
+             WHERE r.rn = 1
+             ORDER BY r.amount DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...binds, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
-        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+          page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Game Activity, cards 3/4: High/Low Roller Active. Same tier/page
@@ -3057,68 +3119,77 @@ export default {
         tier === "high"
           ? [7, 14, 15, ">=", ">=", ">=", ">"] as const
           : [2, 6, 10, "<", "<", "<", "<"] as const;
+      // Exclusive upper bound so gameplay can filter on the raw create_time
+      // TEXT column instead of date(...), which was defeating
+      // idx_wallet_details_create_time and forcing a full scan of a 2M+ row
+      // table on every load (same fix as top-games/highest-bet above).
+      const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
-      const CTE = `WITH elig AS (
-           SELECT user_id, total_deposit, user_balance, last_active_time, deposit_count,
-                  COALESCE(assigned_agent, 'Unassigned') as agent,
-                  (total_deposit * 1.0 / NULLIF(deposit_count, 0)) as avg_lifetime_deposit,
-                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days,
-                  ${vipLevelCase("total_deposit")} as vip
-           FROM users
-           WHERE total_deposit IS NOT NULL AND deposit_count IS NOT NULL AND last_active_time IS NOT NULL
-             AND COALESCE(is_banned, 0) = 0
-         ),
-         gameplay AS (
-           SELECT user_id, game_name, amount
-           FROM wallet_details
-           WHERE game_name IS NOT NULL AND game_name != ''
-             AND source_name IS NOT NULL AND source_name != ''
-             AND date(create_time) BETWEEN ? AND ?
-         ),
-         bet_agg AS (
-           SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
-         ),
-         top_game AS (
-           SELECT user_id, game_name,
-                  ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
-           FROM gameplay GROUP BY user_id, game_name
-         ),
-         qualified AS (
-           SELECT e.user_id, e.vip, e.agent, e.total_deposit, e.user_balance,
-                  COALESCE(tg.game_name, '—') as top_game_played
-           FROM elig e
-           JOIN bet_agg b ON b.user_id = e.user_id
-           LEFT JOIN top_game tg ON tg.user_id = e.user_id AND tg.rn = 1
-           WHERE e.vip BETWEEN ${minVip} AND ${maxVip}
-             AND e.avg_lifetime_deposit ${avgDepositCmp} 500
-             AND e.deposit_count ${depositCountCmp} 20
-             AND e.total_deposit ${totalDepositCmp} 12000
-             AND b.avg_bet ${avgBetCmp} 40
-             AND e.inactive_days BETWEEN 0 AND ${maxInactiveDays}
-         )`;
-      const binds = [rangeStart, anchorDate];
+      const payload = await cachedJson(env, `platform-analysis:game-activity:roller-active:${tier}:${period}:${anchorDate}:${page}`, async () => {
+        const CTE = `WITH elig AS (
+             SELECT user_id, total_deposit, user_balance, last_active_time, deposit_count,
+                    COALESCE(assigned_agent, 'Unassigned') as agent,
+                    (total_deposit * 1.0 / NULLIF(deposit_count, 0)) as avg_lifetime_deposit,
+                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days,
+                    ${vipLevelCase("total_deposit")} as vip
+             FROM users
+             WHERE total_deposit IS NOT NULL AND deposit_count IS NOT NULL AND last_active_time IS NOT NULL
+               AND COALESCE(is_banned, 0) = 0
+           ),
+           gameplay AS (
+             SELECT user_id, game_name, amount
+             FROM wallet_details
+             WHERE game_name IS NOT NULL AND game_name != ''
+               AND source_name IS NOT NULL AND source_name != ''
+               AND create_time >= ? AND create_time < ?
+           ),
+           bet_agg AS (
+             SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
+           ),
+           top_game AS (
+             SELECT user_id, game_name,
+                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
+             FROM gameplay GROUP BY user_id, game_name
+           ),
+           qualified AS (
+             SELECT e.user_id, e.vip, e.agent, e.total_deposit, e.user_balance,
+                    COALESCE(tg.game_name, '—') as top_game_played
+             FROM elig e
+             JOIN bet_agg b ON b.user_id = e.user_id
+             LEFT JOIN top_game tg ON tg.user_id = e.user_id AND tg.rn = 1
+             WHERE e.vip BETWEEN ${minVip} AND ${maxVip}
+               AND e.avg_lifetime_deposit ${avgDepositCmp} 500
+               AND e.deposit_count ${depositCountCmp} 20
+               AND e.total_deposit ${totalDepositCmp} 12000
+               AND b.avg_bet ${avgBetCmp} 40
+               AND e.inactive_days BETWEEN 0 AND ${maxInactiveDays}
+           )`;
+        const binds = [rangeStart, anchorDateExclusive];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM qualified`)
-        .bind(...binds)
-        .first<{ c: number }>();
-      const total = countRow?.c ?? 0;
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM qualified`)
+          .bind(...binds)
+          .first<{ c: number }>();
+        const total = countRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT user_id, vip, agent, total_deposit, user_balance, top_game_played
-           FROM qualified
-           ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...binds, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT user_id, vip, agent, total_deposit, user_balance, top_game_played
+             FROM qualified
+             ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...binds, pageSize, (page - 1) * pageSize)
+          .all();
 
-      return Response.json({
-        tier, period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
-        page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        return {
+          tier, period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+          page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Search User page. Read (search, agent list) stays here as usual —
