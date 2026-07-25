@@ -226,9 +226,16 @@ async function paLoadProfit() {
   const statusEl = document.getElementById('paStatus');
   try {
     const s = paState.profit;
-    const res = await fetch('/api/dashboard/platform-analysis/profit-users?page=' + s.page + (s.newOnly ? '&newOnly=1' : ''));
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (s.page === 1 && !s.newOnly && window.__paBootstrapData && window.__paBootstrapData.profitUsers) {
+      d = window.__paBootstrapData.profitUsers;
+      delete window.__paBootstrapData.profitUsers;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/profit-users?page=' + s.page + (s.newOnly ? '&newOnly=1' : ''));
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#paProfitTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.vip +
@@ -250,9 +257,16 @@ async function paLoadSuspicious() {
   const statusEl = document.getElementById('paStatus');
   try {
     const s = paState.suspicious;
-    const res = await fetch('/api/dashboard/platform-analysis/suspicious-withdrawals?page=' + s.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (s.page === 1 && window.__paBootstrapData && window.__paBootstrapData.suspiciousWithdrawals) {
+      d = window.__paBootstrapData.suspiciousWithdrawals;
+      delete window.__paBootstrapData.suspiciousWithdrawals;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/suspicious-withdrawals?page=' + s.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#paSuspiciousTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.agent + '</td><td>' + r.vip +
@@ -286,9 +300,16 @@ const paChannelState = { page: 1 };
 async function paLoadChannel() {
   const statusEl = document.getElementById('paStatus');
   try {
-    const res = await fetch('/api/dashboard/platform-analysis/channel-performance?page=' + paChannelState.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (paChannelState.page === 1 && window.__paBootstrapData && window.__paBootstrapData.channelPerformance) {
+      d = window.__paBootstrapData.channelPerformance;
+      delete window.__paBootstrapData.channelPerformance;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/channel-performance?page=' + paChannelState.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#paChannelTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.channel + '</td><td>' + Number(r.fd_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.fd_amount) +
@@ -310,9 +331,16 @@ const paRevenueState = { by: 'region' };
 async function paLoadRevenue() {
   const statusEl = document.getElementById('paStatus');
   try {
-    const res = await fetch('/api/dashboard/platform-analysis/net-revenue?by=' + paRevenueState.by);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (paRevenueState.by === 'region' && window.__paBootstrapData && window.__paBootstrapData.netRevenue) {
+      d = window.__paBootstrapData.netRevenue;
+      delete window.__paBootstrapData.netRevenue;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/net-revenue?by=' + paRevenueState.by);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.getElementById('paRevenueHead').innerHTML = paRevenueState.by === 'vip'
       ? '<th>VIP level</th><th>Total deposit</th><th>Total withdrawal</th><th>Net revenue</th><th>Users</th>'
@@ -385,9 +413,16 @@ function paBonusInitDatePills() {
 async function paLoadBonus() {
   const statusEl = document.getElementById('paStatus');
   try {
-    const res = await fetch('/api/dashboard/platform-analysis/bonus-claims?period=' + paBonusState.period + '&date=' + paBonusState.date);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (paBonusState.period === 'day' && window.__paBootstrapData && window.__paBootstrapData.bonusClaims) {
+      d = window.__paBootstrapData.bonusClaims;
+      delete window.__paBootstrapData.bonusClaims;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/bonus-claims?period=' + paBonusState.period + '&date=' + paBonusState.date);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#paBonusTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.category + '</td><td>' + Number(r.claimed_users).toLocaleString('en-IN') + '</td><td>' + paFmtInr(r.total_bonus) +
@@ -419,9 +454,16 @@ async function paLoadNewOld() {
   const statusEl = document.getElementById('paStatus');
   try {
     const endpoint = paNewOldState.view === 'daily' ? 'new-vs-old' : 'new-user-retention';
-    const res = await fetch('/api/dashboard/platform-analysis/' + endpoint + '?page=' + paNewOldState.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (endpoint === 'new-vs-old' && paNewOldState.page === 1 && window.__paBootstrapData && window.__paBootstrapData.newVsOld) {
+      d = window.__paBootstrapData.newVsOld;
+      delete window.__paBootstrapData.newVsOld;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/' + endpoint + '?page=' + paNewOldState.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.getElementById('paNewOldHead').innerHTML = '<tr>' + paNewOldHeads[paNewOldState.view] + '</tr>';
 

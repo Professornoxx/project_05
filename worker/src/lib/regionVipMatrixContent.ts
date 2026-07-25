@@ -123,9 +123,16 @@ async function rvLoad() {
       params.set('date', document.getElementById('rvDateSelect').value);
     }
 
-    const res = await fetch('/api/dashboard/platform-analysis/region-vip-matrix?' + params.toString());
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (rvState.mode === 'day' && window.__paBootstrapData && window.__paBootstrapData.regionVipMatrix) {
+      d = window.__paBootstrapData.regionVipMatrix;
+      delete window.__paBootstrapData.regionVipMatrix;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/region-vip-matrix?' + params.toString());
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     const regions = d.regions || [];
     const rowsHtml = regions.map((r) =>

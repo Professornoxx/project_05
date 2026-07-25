@@ -119,8 +119,36 @@ function vipNextLevelMinCase(expr: string): string {
     WHEN ${expr} < 44795600 THEN 44795600 WHEN ${expr} < 69795600 THEN 69795600 ELSE NULL END`;
 }
 
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+// Kicks off the Platform Analysis bootstrap fetch as early as possible
+// (before any panel's own script runs, since it's prepended first in that
+// page's composition below) and exposes a shared promise + data bag every
+// panel's load function awaits/reads instead of firing its own request on
+// first load — see the bootstrap endpoint and handleFetch comments above
+// for why. window.__paBootstrapData's per-panel keys are deleted as each
+// panel consumes them, so a later pagination/filter-change call from that
+// same panel correctly falls through to its normal individual fetch.
+const PA_BOOTSTRAP_SCRIPT = `<script>
+window.__paBootstrapData = null;
+window.__paBootstrapReady = fetch('/api/dashboard/platform-analysis/bootstrap')
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (d) { window.__paBootstrapData = d || {}; })
+  .catch(function () { window.__paBootstrapData = {}; });
+</script>`;
+
+// Named so /api/dashboard/platform-analysis/bootstrap (below) can call it
+// recursively as a plain in-process function call for each panel's default
+// request — same route logic, same auth check, same cachedJson layer, but
+// with zero extra network round-trips. This is what actually fixes
+// Platform Analysis's real bottleneck: the page previously fired ~13
+// separate concurrent HTTP requests to this Worker, and instrumentation
+// (wrangler tail, 2026-07-25) showed each one spending 17-35 SECONDS of
+// wall-clock time waiting despite ~1ms of actual CPU time — i.e. the
+// requests were queuing against each other (almost certainly D1/KV
+// connection concurrency contention across that many simultaneous
+// separate Worker invocations hitting the same bindings at once), not
+// slow queries. Consolidating into one request that makes these same
+// calls in-process, sequentially, avoids that queuing entirely.
+const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): Promise<Response> => {
     const url = new URL(request.url);
 
     // Block the local test endpoint in production (see cron-triggers gotchas).
@@ -155,7 +183,7 @@ export default {
           : dashboardRoute.key === "performance"
           ? PERFORMANCE_CONTENT_HTML + DAILY_RANGE_PERFORMANCE_CONTENT_HTML
           : dashboardRoute.key === "platform-analysis"
-          ? WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + REGION_VIP_MATRIX_CONTENT_HTML + GAME_ACTIVITY_CONTENT_HTML
+          ? PA_BOOTSTRAP_SCRIPT + WEEKLY_PERFORMANCE_CONTENT_HTML + PLATFORM_ANALYSIS_CONTENT_HTML + REGION_VIP_MATRIX_CONTENT_HTML + GAME_ACTIVITY_CONTENT_HTML
           : dashboardRoute.key === "search-user"
           ? SEARCH_USER_CONTENT_HTML
           : EMPTY_CONTENT_PLACEHOLDER;
@@ -2109,7 +2137,7 @@ export default {
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2197,7 +2225,7 @@ export default {
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2291,7 +2319,7 @@ export default {
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2353,7 +2381,7 @@ export default {
           .all();
 
         return { date: anchorDate, by, rows: rows.results };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2435,7 +2463,7 @@ export default {
           .all();
 
         return { date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2654,7 +2682,7 @@ export default {
             totalDepositorCountDay: { target: TARGETS.totalDepositorCountDay, actual: metricsCurrent.totalDepositorCountDay },
           },
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2735,7 +2763,7 @@ export default {
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2803,7 +2831,7 @@ export default {
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2906,7 +2934,7 @@ export default {
           .sort((a, b) => b.total - a.total);
 
         return { mode, date: anchorDate, range: rangeLabel, regions };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -2996,7 +3024,7 @@ export default {
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -3071,7 +3099,7 @@ export default {
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
     }
@@ -3187,9 +3215,62 @@ export default {
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      });
+      }, 600);
 
       return Response.json(payload);
+    }
+
+    // Platform Analysis bootstrap: fetches every panel's DEFAULT-params
+    // view (page 1, default filters) in one request instead of the ~13
+    // separate concurrent requests the page used to fire on load — see
+    // the comment on handleFetch above for why that mattered. Each
+    // sub-call reuses this exact route logic (auth, cachedJson, the
+    // query itself) via a direct in-process call to handleFetch with a
+    // synthetic Request carrying the same session cookie, not a real
+    // network fetch — so this is exactly as correct as calling each
+    // endpoint individually, just without the per-request HTTP/contention
+    // overhead. Pagination, filter changes, and period-tab switches after
+    // the initial load still call the individual endpoints directly, as
+    // before — this endpoint only covers the first paint.
+    if (url.pathname === "/api/dashboard/platform-analysis/bootstrap" && request.method === "GET") {
+      const authFail = requireAdmin(request, env, "dashboard");
+      if (authFail) return authFail;
+
+      const cookie = request.headers.get("Cookie") || "";
+      const origin = new URL(request.url).origin;
+      const call = async (path: string) => {
+        const subReq = new Request(origin + path, { headers: { Cookie: cookie } });
+        const res = await handleFetch(subReq, env, ctx);
+        return res.ok ? res.json() : null;
+      };
+
+      // Sequential, not Promise.all — even in-process, firing 12 concurrent
+      // D1-touching calls at once from the same binding reproduced the same
+      // queuing behavior as 12 separate HTTP requests (confirmed live
+      // 2026-07-25: first/cold bootstrap call took ~41s wall time despite
+      // ~14ms CPU time, same signature as the original per-request
+      // contention). Sequential awaits pay each query's real cost once, in
+      // order, with no cross-call contention — the KV cache from cachedJson
+      // then makes every load after the first (by any user, within the
+      // 120s TTL) near-instant regardless.
+      const weeklyPerformance = await call("/api/dashboard/platform-analysis/weekly-performance");
+      const profitUsers = await call("/api/dashboard/platform-analysis/profit-users?page=1");
+      const suspiciousWithdrawals = await call("/api/dashboard/platform-analysis/suspicious-withdrawals?page=1");
+      const channelPerformance = await call("/api/dashboard/platform-analysis/channel-performance?page=1");
+      const netRevenue = await call("/api/dashboard/platform-analysis/net-revenue?by=region");
+      const bonusClaims = await call("/api/dashboard/platform-analysis/bonus-claims?period=day");
+      const newVsOld = await call("/api/dashboard/platform-analysis/new-vs-old?page=1");
+      const regionVipMatrix = await call("/api/dashboard/platform-analysis/region-vip-matrix?mode=day");
+      const topGames = await call("/api/dashboard/platform-analysis/game-activity/top-games?period=15days&page=1");
+      const highestBet = await call("/api/dashboard/platform-analysis/game-activity/highest-bet?period=15days&page=1");
+      const rollerActiveHigh = await call("/api/dashboard/platform-analysis/game-activity/roller-active?tier=high&period=15days&page=1");
+      const rollerActiveLow = await call("/api/dashboard/platform-analysis/game-activity/roller-active?tier=low&period=15days&page=1");
+
+      return Response.json({
+        weeklyPerformance, profitUsers, suspiciousWithdrawals, channelPerformance,
+        netRevenue, bonusClaims, newVsOld, regionVipMatrix,
+        topGames, highestBet, rollerActiveHigh, rollerActiveLow,
+      });
     }
 
     // Search User page. Read (search, agent list) stays here as usual —
@@ -3703,5 +3784,6 @@ export default {
     // read-only: a bug or leaked key here can't reach those routes.
 
     return new Response("Not Found", { status: 404 });
-  },
 };
+
+export default { fetch: handleFetch };

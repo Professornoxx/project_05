@@ -208,9 +208,16 @@ async function gaLoadTopGames() {
   const statusEl = document.getElementById('gaStatus');
   try {
     const s = gaState.topGames;
-    const res = await fetch('/api/dashboard/platform-analysis/game-activity/top-games?period=' + gaState.period + '&page=' + s.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (gaState.period === '15days' && s.page === 1 && window.__paBootstrapData && window.__paBootstrapData.topGames) {
+      d = window.__paBootstrapData.topGames;
+      delete window.__paBootstrapData.topGames;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/game-activity/top-games?period=' + gaState.period + '&page=' + s.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#gaTopGamesTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.vip + '</td><td>' + r.agent + '</td><td>' + r.game_name +
@@ -231,9 +238,16 @@ async function gaLoadHighestBet() {
   const statusEl = document.getElementById('gaStatus');
   try {
     const s = gaState.highestBet;
-    const res = await fetch('/api/dashboard/platform-analysis/game-activity/highest-bet?period=' + gaState.period + '&page=' + s.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (gaState.period === '15days' && s.page === 1 && window.__paBootstrapData && window.__paBootstrapData.highestBet) {
+      d = window.__paBootstrapData.highestBet;
+      delete window.__paBootstrapData.highestBet;
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/game-activity/highest-bet?period=' + gaState.period + '&page=' + s.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#gaHighestBetTable tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.vip + '</td><td>' + r.agent + '</td><td>' + gaFmtInr(r.highest_bet) +
@@ -255,9 +269,17 @@ async function gaLoadRoller(tier) {
   const prefix = tier === 'high' ? 'gaHighRoller' : 'gaLowRoller';
   try {
     const s = tier === 'high' ? gaState.highRoller : gaState.lowRoller;
-    const res = await fetch('/api/dashboard/platform-analysis/game-activity/roller-active?tier=' + tier + '&period=' + gaState.period + '&page=' + s.page);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    const bootstrapKey = tier === 'high' ? 'rollerActiveHigh' : 'rollerActiveLow';
+    let d;
+    if (window.__paBootstrapReady) { await window.__paBootstrapReady; }
+    if (gaState.period === '15days' && s.page === 1 && window.__paBootstrapData && window.__paBootstrapData[bootstrapKey]) {
+      d = window.__paBootstrapData[bootstrapKey];
+      delete window.__paBootstrapData[bootstrapKey];
+    } else {
+      const res = await fetch('/api/dashboard/platform-analysis/game-activity/roller-active?tier=' + tier + '&period=' + gaState.period + '&page=' + s.page);
+      d = await res.json();
+      if (!res.ok) throw new Error(d.error || res.statusText);
+    }
 
     document.querySelector('#' + prefix + 'Table tbody').innerHTML = (d.rows || []).map((r) =>
       '<tr><td>' + r.user_id + '</td><td>' + r.vip + '</td><td>' + r.agent + '</td><td>' + gaFmtInr(r.total_deposit) +
