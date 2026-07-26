@@ -2,16 +2,31 @@
 Precomputes the Platform Analysis "Month" tab reports (Bonus Claim Report,
 Game Activity's Top Games / Highest Single Bet / High & Low Roller Active)
 and publishes them to R2, so the dashboard Worker can serve that view from a
-small JSON object instead of scanning up to 29 days of wallet_details live
-on every page load. Day/Week/15-days tabs are cheap enough to stay live and
-are untouched by this.
+small JSON object instead of scanning raw wallet_details live on every page
+load. Day/Week/15-days tabs are cheap enough to stay live and are untouched
+by this.
+
+Also owns wallet_daily_agg: a one-row-per-(day, user, game, is_bonus)
+rollup of wallet_details, refreshed idempotently for the last 2 days on
+every run (today + yesterday, covering the same "which day is this sync
+touching" ambiguity sync_wallet.py already handles). This exists because
+raw wallet_details hit D1's 500MB size cap at only ~19 days old
+(2026-07-26 incident) — it stores every individual bet/bonus event, so it
+scales with total bet COUNT, not with (users x games), which is orders of
+magnitude smaller. Every report below reads from wallet_daily_agg over a
+29-day window instead of scanning 29 raw days, which is what actually lets
+raw wallet_details retention shrink safely (see cleanup.ts) without losing
+Month-tab accuracy — a precomputed report alone doesn't fix this, since it
+still needs SOMETHING to hold 29 real days of data at compute time; this
+table is that something, at roughly (unique players) x (unique games) rows
+per day instead of (total bets placed).
 
 Run as a step in etl-hourly.yml, AFTER sync_deposit_withdraw.py and
-sync_wallet.py, so it always reads freshly-synced data. Mirrors the exact
-SQL each corresponding endpoint in worker/src/index.ts runs for period=month
-(same thresholds, same CTEs) — the two must be kept in sync by hand if either
-changes, same as etl/sync_engine.py already mirrors chunkedUpsert.ts/
-aggregate.ts/sync.ts by hand.
+sync_wallet.py, so it always reads freshly-synced data. Report SQL mirrors
+the shape each corresponding endpoint in worker/src/index.ts computes for
+period=month (same thresholds) — the two must be kept in sync by hand if
+either changes, same as etl/sync_engine.py already mirrors
+chunkedUpsert.ts/aggregate.ts/sync.ts by hand.
 
 Report shape written to R2 (one JSON object per report):
   { generatedAt, period: "month", date, range: {start, end}, total, rows: [...] }
@@ -40,14 +55,49 @@ def _put(key: str, payload: dict) -> None:
     print(f"wrote {key}: {payload.get('total', len(payload.get('rows', [])))} rows")
 
 
-def build_bonus_claims(anchor_date: str, range_start: str, range_end_exclusive: str) -> None:
-    """Mirrors /api/dashboard/platform-analysis/bonus-claims (period=month)."""
-    sql = f"""WITH bonus_claims AS (
-        SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
+def refresh_daily_agg(day: str) -> None:
+    """Idempotent full recompute of wallet_daily_agg for one calendar day,
+    from that day's raw wallet_details rows. Safe to call repeatedly (e.g.
+    every hourly run for "today") since it deletes-then-reinserts rather
+    than incrementing — matches how wallet syncs themselves re-fetch the
+    same day repeatedly until it closes. max_amount_time is picked via a
+    ranked subquery (not a plain MAX(create_time), which would give the
+    LATEST bet's time, not the time of the LARGEST bet)."""
+    cf_client.d1_query(DAILY_DB_ID, "DELETE FROM wallet_daily_agg WHERE d = ?", [day])
+    sql = """WITH ranked AS (
+        SELECT user_id, game_name,
+               CASE WHEN source_name IS NULL OR source_name = '' THEN 1 ELSE 0 END as is_bonus,
+               amount, create_time,
+               ROW_NUMBER() OVER (
+                 PARTITION BY user_id, game_name, CASE WHEN source_name IS NULL OR source_name = '' THEN 1 ELSE 0 END
+                 ORDER BY amount DESC, create_time DESC
+               ) as rn
         FROM wallet_details
-        WHERE game_name IS NOT NULL AND game_name != ''
-          AND (source_name IS NULL OR source_name = '')
-          AND create_time >= ? AND create_time < ? AND user_id IS NOT NULL
+        WHERE date(create_time) = ? AND game_name IS NOT NULL AND game_name != '' AND user_id IS NOT NULL
+      ),
+      agg AS (
+        SELECT user_id, game_name, is_bonus,
+               SUM(amount) as total_amount, COUNT(*) as bet_count,
+               MIN(create_time) as first_time, MAX(create_time) as last_active
+        FROM ranked GROUP BY user_id, game_name, is_bonus
+      )
+      INSERT INTO wallet_daily_agg (d, user_id, game_name, is_bonus, total_amount, bet_count, max_amount, max_amount_time, first_time, last_active)
+      SELECT ?, a.user_id, a.game_name, a.is_bonus, a.total_amount, a.bet_count, r.amount, r.create_time, a.first_time, a.last_active
+      FROM agg a
+      JOIN ranked r ON r.user_id = a.user_id AND r.game_name = a.game_name AND r.is_bonus = a.is_bonus AND r.rn = 1"""
+    cf_client.d1_query(DAILY_DB_ID, sql, [day, day])
+    print(f"refreshed wallet_daily_agg for {day}")
+
+
+def build_bonus_claims(anchor_date: str, range_start: str) -> None:
+    """Mirrors /api/dashboard/platform-analysis/bonus-claims (period=month),
+    reading from wallet_daily_agg instead of raw wallet_details."""
+    sql = """WITH bonus_claims AS (
+        SELECT user_id, game_name as category,
+               MIN(first_time) as first_claim_time,
+               SUM(bet_count) as claim_count, SUM(total_amount) as claim_amount
+        FROM wallet_daily_agg
+        WHERE is_bonus = 1 AND d BETWEEN ? AND ?
         GROUP BY user_id, game_name
       ),
       category_totals AS (
@@ -70,7 +120,7 @@ def build_bonus_claims(anchor_date: str, range_start: str, range_end_exclusive: 
              (100.0 * COALESCE(dat.deposited_after, 0) / ct.claimed_users) as pct
       FROM category_totals ct LEFT JOIN dep_after_totals dat ON dat.category = ct.category
       ORDER BY ct.claimed_users DESC LIMIT 50"""
-    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, range_end_exclusive])
+    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, anchor_date])
     _put("reports/platform-analysis/bonus-claims-month.json", {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "period": "month", "date": anchor_date,
@@ -79,9 +129,7 @@ def build_bonus_claims(anchor_date: str, range_start: str, range_end_exclusive: 
     })
 
 
-def _game_activity_cte(new_user_cutoff: str, anchor_date: str, range_start: str, range_end_exclusive: str) -> str:
-    """Shared first_dep/new_users/gameplay CTEs, mirrors both top-games and
-    highest-bet's identical prefix in index.ts."""
+def _new_users_cte(new_user_cutoff: str, anchor_date: str) -> str:
     return f"""WITH first_dep AS (
         SELECT user_id, MIN(date(create_time)) as first_dep_date
         FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
@@ -90,31 +138,26 @@ def _game_activity_cte(new_user_cutoff: str, anchor_date: str, range_start: str,
         SELECT fd.user_id FROM first_dep fd
         JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
         WHERE fd.first_dep_date BETWEEN '{new_user_cutoff}' AND '{anchor_date}'
-      ),
-      gameplay AS (
-        SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
-        FROM wallet_details wd
-        JOIN new_users nu ON nu.user_id = wd.user_id
-        WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
-          AND wd.source_name IS NOT NULL AND wd.source_name != ''
-          AND wd.create_time >= '{range_start}' AND wd.create_time < '{range_end_exclusive}'
       )"""
 
 
-def build_top_games(anchor_date: str, new_user_cutoff: str, range_start: str, range_end_exclusive: str) -> None:
+def build_top_games(anchor_date: str, new_user_cutoff: str, range_start: str) -> None:
     """Mirrors /api/dashboard/platform-analysis/game-activity/top-games (period=month)."""
-    cte = _game_activity_cte(new_user_cutoff, anchor_date, range_start, range_end_exclusive)
+    cte = _new_users_cte(new_user_cutoff, anchor_date)
     sql = f"""{cte},
       agg AS (
-        SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
-        FROM gameplay GROUP BY user_id, game_name
+        SELECT wa.user_id, wa.game_name, SUM(wa.total_amount) as total_bet, MAX(wa.last_active) as last_active
+        FROM wallet_daily_agg wa
+        JOIN new_users nu ON nu.user_id = wa.user_id
+        WHERE wa.is_bonus = 0 AND wa.d BETWEEN ? AND ?
+        GROUP BY wa.user_id, wa.game_name
       )
       SELECT a.user_id, a.game_name, a.total_bet, a.last_active,
              {VIP_CASE.format(expr="COALESCE(u.total_deposit, 0)")} as vip,
              COALESCE(u.assigned_agent, 'Unassigned') as agent
       FROM agg a LEFT JOIN users u ON u.user_id = a.user_id
       ORDER BY a.total_bet DESC"""
-    rows = cf_client.d1_query(DAILY_DB_ID, sql)
+    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, anchor_date])
     _put("reports/platform-analysis/top-games-month.json", {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "period": "month", "date": anchor_date,
@@ -123,14 +166,19 @@ def build_top_games(anchor_date: str, new_user_cutoff: str, range_start: str, ra
     })
 
 
-def build_highest_bet(anchor_date: str, new_user_cutoff: str, range_start: str, range_end_exclusive: str) -> None:
-    """Mirrors /api/dashboard/platform-analysis/game-activity/highest-bet (period=month)."""
-    cte = _game_activity_cte(new_user_cutoff, anchor_date, range_start, range_end_exclusive)
+def build_highest_bet(anchor_date: str, new_user_cutoff: str, range_start: str) -> None:
+    """Mirrors /api/dashboard/platform-analysis/game-activity/highest-bet
+    (period=month). The window's single highest bet per user is the max of
+    each qualifying day's already-tracked max_amount, ranked again here to
+    also recover which game/day it happened on."""
+    cte = _new_users_cte(new_user_cutoff, anchor_date)
     sql = f"""{cte},
       ranked AS (
-        SELECT user_id, game_name, amount, create_time,
-               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
-        FROM gameplay
+        SELECT wa.user_id, wa.game_name, wa.max_amount as amount, wa.max_amount_time as create_time,
+               ROW_NUMBER() OVER (PARTITION BY wa.user_id ORDER BY wa.max_amount DESC, wa.max_amount_time DESC) as rn
+        FROM wallet_daily_agg wa
+        JOIN new_users nu ON nu.user_id = wa.user_id
+        WHERE wa.is_bonus = 0 AND wa.d BETWEEN ? AND ?
       )
       SELECT r.user_id, r.game_name, r.amount as highest_bet, r.create_time as last_active,
              {VIP_CASE.format(expr="COALESCE(u.total_deposit, 0)")} as vip,
@@ -138,7 +186,7 @@ def build_highest_bet(anchor_date: str, new_user_cutoff: str, range_start: str, 
       FROM ranked r LEFT JOIN users u ON u.user_id = r.user_id
       WHERE r.rn = 1
       ORDER BY r.amount DESC"""
-    rows = cf_client.d1_query(DAILY_DB_ID, sql)
+    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, anchor_date])
     _put("reports/platform-analysis/highest-bet-month.json", {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "period": "month", "date": anchor_date,
@@ -147,11 +195,13 @@ def build_highest_bet(anchor_date: str, new_user_cutoff: str, range_start: str, 
     })
 
 
-def build_roller_active(tier: str, anchor_date: str, range_start: str, range_end_exclusive: str) -> None:
+def build_roller_active(tier: str, anchor_date: str, range_start: str) -> None:
     """Mirrors /api/dashboard/platform-analysis/game-activity/roller-active
-    (period=month), one tier at a time. Thresholds must match index.ts's
-    TARGETS-equivalent block exactly — see that endpoint's comment for
-    where 500/20/12000/40 and the VIP/inactive-day bounds came from."""
+    (period=month), one tier at a time, reading wallet_daily_agg instead of
+    raw wallet_details. avg_bet across the window is SUM(total_amount)/
+    SUM(bet_count) over the qualifying days — mathematically identical to
+    averaging the raw rows directly, since it's sum-of-sums over sum-of-
+    counts, not an average-of-averages."""
     if tier == "high":
         min_vip, max_vip, max_inactive_days = 7, 14, 15
         avg_dep_cmp, dep_count_cmp, total_dep_cmp, avg_bet_cmp = ">=", ">=", ">=", ">"
@@ -170,25 +220,24 @@ def build_roller_active(tier: str, anchor_date: str, range_start: str, range_end
           AND COALESCE(is_banned, 0) = 0
       ),
       gameplay AS (
-        SELECT user_id, game_name, amount
-        FROM wallet_details
-        WHERE game_name IS NOT NULL AND game_name != ''
-          AND source_name IS NOT NULL AND source_name != ''
-          AND create_time >= ? AND create_time < ?
+        SELECT user_id, game_name, total_amount, bet_count
+        FROM wallet_daily_agg
+        WHERE is_bonus = 0 AND d BETWEEN ? AND ?
       ),
       bet_agg AS (
-        SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
+        SELECT user_id, SUM(total_amount) * 1.0 / NULLIF(SUM(bet_count), 0) as avg_bet
+        FROM gameplay GROUP BY user_id
       ),
-      top_game AS (
-        SELECT user_id, game_name,
-               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
+      game_totals AS (
+        SELECT user_id, game_name, SUM(total_amount) as game_total,
+               ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(total_amount) DESC) as rn
         FROM gameplay GROUP BY user_id, game_name
       )
       SELECT e.user_id, e.vip, e.agent, e.total_deposit, e.user_balance,
              COALESCE(tg.game_name, '—') as top_game_played
       FROM elig e
       JOIN bet_agg b ON b.user_id = e.user_id
-      LEFT JOIN top_game tg ON tg.user_id = e.user_id AND tg.rn = 1
+      LEFT JOIN game_totals tg ON tg.user_id = e.user_id AND tg.rn = 1
       WHERE e.vip BETWEEN {min_vip} AND {max_vip}
         AND e.avg_lifetime_deposit {avg_dep_cmp} 500
         AND e.deposit_count {dep_count_cmp} 20
@@ -196,7 +245,7 @@ def build_roller_active(tier: str, anchor_date: str, range_start: str, range_end
         AND b.avg_bet {avg_bet_cmp} 40
         AND e.inactive_days BETWEEN 0 AND {max_inactive_days}
       ORDER BY e.total_deposit DESC"""
-    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, range_end_exclusive])
+    rows = cf_client.d1_query(DAILY_DB_ID, sql, [range_start, anchor_date])
     _put(f"reports/platform-analysis/roller-active-{tier}-month.json", {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "tier": tier, "period": "month", "date": anchor_date,
@@ -207,15 +256,21 @@ def build_roller_active(tier: str, anchor_date: str, range_start: str, range_end
 
 def main() -> None:
     anchor_date = common.fmt_date(common.today_ist_date())
-    range_start = common.shift_date(anchor_date, -29)          # 29 days back, matches period=month's inclusive range
-    new_user_cutoff = common.shift_date(anchor_date, -32)      # "last 33 days" cohort, fixed regardless of period
-    range_end_exclusive = common.shift_date(anchor_date, 1)    # exclusive upper bound for raw create_time comparisons
+    yesterday = common.shift_date(anchor_date, -1)
+    range_start = common.shift_date(anchor_date, -29)      # 29 days back, matches period=month's inclusive range
+    new_user_cutoff = common.shift_date(anchor_date, -32)  # "last 33 days" cohort, fixed regardless of period
 
-    build_bonus_claims(anchor_date, range_start, range_end_exclusive)
-    build_top_games(anchor_date, new_user_cutoff, range_start, range_end_exclusive)
-    build_highest_bet(anchor_date, new_user_cutoff, range_start, range_end_exclusive)
-    build_roller_active("high", anchor_date, range_start, range_end_exclusive)
-    build_roller_active("low", anchor_date, range_start, range_end_exclusive)
+    # Refresh today + yesterday every run (idempotent), same "which day is
+    # this touching" coverage sync_wallet.py already handles for the raw
+    # sync — catches both mid-day accumulation and the just-closed prior day.
+    refresh_daily_agg(anchor_date)
+    refresh_daily_agg(yesterday)
+
+    build_bonus_claims(anchor_date, range_start)
+    build_top_games(anchor_date, new_user_cutoff, range_start)
+    build_highest_bet(anchor_date, new_user_cutoff, range_start)
+    build_roller_active("high", anchor_date, range_start)
+    build_roller_active("low", anchor_date, range_start)
 
 
 if __name__ == "__main__":

@@ -119,6 +119,37 @@ function vipNextLevelMinCase(expr: string): string {
     WHEN ${expr} < 44795600 THEN 44795600 WHEN ${expr} < 69795600 THEN 69795600 ELSE NULL END`;
 }
 
+// Reads a precomputed Platform Analysis "Month" tab report (written by
+// etl/build_reports.py) from the REPORTS R2 binding, applies the same
+// page/pageSize pagination shape the live-query path already returns, and
+// returns null on ANY failure (binding not configured, object missing,
+// parse error) so callers can transparently fall back to the live query —
+// this is a performance optimization, not a new source of truth, so a
+// stale/missing report must never surface as a user-facing error.
+async function readMonthReport(
+  env: Env,
+  key: string,
+  page: number,
+  pageSize: number
+): Promise<{ rows: unknown[]; total: number; totalPages: number } | null> {
+  if (!env.REPORTS) return null;
+  try {
+    const obj = await env.REPORTS.get(key);
+    if (!obj) return null;
+    const data = await obj.json<{ rows: unknown[]; total: number }>();
+    if (!Array.isArray(data.rows)) return null;
+    const total = typeof data.total === "number" ? data.total : data.rows.length;
+    const start = (page - 1) * pageSize;
+    return {
+      rows: data.rows.slice(start, start + pageSize),
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Kicks off the Platform Analysis bootstrap fetch as early as possible
 // (before any panel's own script runs, since it's prepended first in that
 // page's composition below) and exposes a shared promise + data bag every
@@ -2425,15 +2456,44 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         return d.toISOString().slice(0, 10);
       })();
 
+      // "Month" is the one view expensive enough to have a precomputed
+      // report (see etl/build_reports.py) — read that first and only fall
+      // back to the live query below if it's missing/stale/unreadable.
+      // Bonus Claims has no pagination (flat LIMIT 50), so this is a
+      // direct pass-through, not readMonthReport's paginated shape.
+      if (period === "month" && env.REPORTS) {
+        try {
+          const obj = await env.REPORTS.get("reports/platform-analysis/bonus-claims-month.json");
+          if (obj) {
+            const report = await obj.json<{ date: string; range: { start: string; end: string }; rows: unknown[] }>();
+            if (Array.isArray(report.rows)) {
+              return Response.json({ date: report.date, period, rangeStart: report.range.start, rangeEnd: report.range.end, rows: report.rows });
+            }
+          }
+        } catch {
+          // fall through to live query
+        }
+      }
+
       const payload = await cachedJson(env, `platform-analysis:bonus-claims:${anchorDate}:${period}`, async () => {
-        const CTE = `WITH bonus_claims AS (
-            SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
-            FROM wallet_details
-            WHERE game_name IS NOT NULL AND game_name != ''
-              AND (source_name IS NULL OR source_name = '')
-              AND create_time >= ? AND create_time < ? AND user_id IS NOT NULL
-            GROUP BY user_id, game_name
-          ),
+        // period=month reaches here only if the precomputed R2 report was
+        // unavailable — same wallet_daily_agg fallback as Game Activity
+        // above, since raw wallet_details no longer retains a full 29-day
+        // window (see cleanup.ts).
+        const bonusClaimsSource =
+          period === "month"
+            ? `SELECT user_id, game_name as category, MIN(first_time) as first_claim_time,
+                      SUM(bet_count) as claim_count, SUM(total_amount) as claim_amount
+               FROM wallet_daily_agg
+               WHERE is_bonus = 1 AND d >= ? AND d <= ?
+               GROUP BY user_id, game_name`
+            : `SELECT user_id, game_name as category, MIN(create_time) as first_claim_time, COUNT(*) as claim_count, SUM(amount) as claim_amount
+               FROM wallet_details
+               WHERE game_name IS NOT NULL AND game_name != ''
+                 AND (source_name IS NULL OR source_name = '')
+                 AND create_time >= ? AND create_time < ? AND user_id IS NOT NULL
+               GROUP BY user_id, game_name`;
+        const CTE = `WITH bonus_claims AS (${bonusClaimsSource}),
           category_totals AS (
             SELECT category, COUNT(*) as claimed_users, COALESCE(SUM(claim_amount), 0) as total_bonus
             FROM bonus_claims GROUP BY category
@@ -2459,7 +2519,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
              FROM category_totals ct LEFT JOIN dep_after_totals dat ON dat.category = ct.category
              ORDER BY ct.claimed_users DESC LIMIT 50`
           )
-          .bind(rangeStart, rangeEndExclusive)
+          .bind(rangeStart, period === "month" ? anchorDate : rangeEndExclusive)
           .all();
 
         return { date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results };
@@ -2977,7 +3037,39 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       // SCAN -> SEARCH USING INDEX after this change).
       const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
+      // "Month" is precomputed (see etl/build_reports.py) — read that
+      // first, fall back to the live query below if missing/unreadable.
+      if (period === "month") {
+        const report = await readMonthReport(env, "reports/platform-analysis/top-games-month.json", page, pageSize);
+        if (report) {
+          return Response.json({
+            period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+            page, pageSize, total: report.total, totalPages: report.totalPages,
+            rows: report.rows,
+          });
+        }
+      }
+
       const payload = await cachedJson(env, `platform-analysis:game-activity:top-games:${period}:${anchorDate}:${page}`, async () => {
+        // period=month reaches here only if the precomputed R2 report was
+        // unavailable — this fallback reads wallet_daily_agg instead of
+        // raw wallet_details for that case specifically, since raw
+        // wallet_details only retains WALLET_DETAILS_RETENTION_DAYS (15,
+        // see cleanup.ts) and would silently return an incomplete 29-day
+        // "month" result otherwise. day/week/15days stay on raw
+        // wallet_details as before — those windows are well within 15 days.
+        const gameplaySource =
+          period === "month"
+            ? `SELECT wa.user_id, wa.game_name, wa.total_amount as amount, wa.last_active as create_time
+               FROM wallet_daily_agg wa
+               JOIN new_users nu ON nu.user_id = wa.user_id
+               WHERE wa.is_bonus = 0 AND wa.d >= ? AND wa.d <= ?`
+            : `SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+               FROM wallet_details wd
+               JOIN new_users nu ON nu.user_id = wd.user_id
+               WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+                 AND wd.source_name IS NOT NULL AND wd.source_name != ''
+                 AND wd.create_time >= ? AND wd.create_time < ?`;
         const CTE = `WITH first_dep AS (
              SELECT user_id, MIN(date(create_time)) as first_dep_date
              FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
@@ -2987,19 +3079,14 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
              JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
              WHERE fd.first_dep_date BETWEEN ? AND ?
            ),
-           gameplay AS (
-             SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
-             FROM wallet_details wd
-             JOIN new_users nu ON nu.user_id = wd.user_id
-             WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
-               AND wd.source_name IS NOT NULL AND wd.source_name != ''
-               AND wd.create_time >= ? AND wd.create_time < ?
-           ),
+           gameplay AS (${gameplaySource}),
            agg AS (
              SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
              FROM gameplay GROUP BY user_id, game_name
            )`;
-        const binds = [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
+        const binds = period === "month"
+          ? [newUserCutoff, anchorDate, rangeStart, anchorDate]
+          : [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
         const countRow = await env.daily_records_db
           .prepare(`${CTE} SELECT COUNT(*) as c FROM agg`)
@@ -3050,7 +3137,34 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       const newUserCutoff = addDaysGA(anchorDate, -32);
       const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
+      if (period === "month") {
+        const report = await readMonthReport(env, "reports/platform-analysis/highest-bet-month.json", page, pageSize);
+        if (report) {
+          return Response.json({
+            period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+            page, pageSize, total: report.total, totalPages: report.totalPages,
+            rows: report.rows,
+          });
+        }
+      }
+
       const payload = await cachedJson(env, `platform-analysis:game-activity:highest-bet:${period}:${anchorDate}:${page}`, async () => {
+        // See top-games' identical comment above — same wallet_daily_agg
+        // fallback for period=month, using its already-tracked per-day
+        // max_amount/max_amount_time rather than re-deriving a max from a
+        // sum (which total_amount is).
+        const gameplaySource =
+          period === "month"
+            ? `SELECT wa.user_id, wa.game_name, wa.max_amount as amount, wa.max_amount_time as create_time
+               FROM wallet_daily_agg wa
+               JOIN new_users nu ON nu.user_id = wa.user_id
+               WHERE wa.is_bonus = 0 AND wa.d >= ? AND wa.d <= ?`
+            : `SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
+               FROM wallet_details wd
+               JOIN new_users nu ON nu.user_id = wd.user_id
+               WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
+                 AND wd.source_name IS NOT NULL AND wd.source_name != ''
+                 AND wd.create_time >= ? AND wd.create_time < ?`;
         const CTE = `WITH first_dep AS (
              SELECT user_id, MIN(date(create_time)) as first_dep_date
              FROM deposits WHERE is_first_deposit = 1 AND user_id IS NOT NULL GROUP BY user_id
@@ -3060,20 +3174,15 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
              JOIN users u ON u.user_id = fd.user_id AND COALESCE(u.is_banned, 0) = 0
              WHERE fd.first_dep_date BETWEEN ? AND ?
            ),
-           gameplay AS (
-             SELECT wd.user_id, wd.game_name, wd.amount, wd.create_time
-             FROM wallet_details wd
-             JOIN new_users nu ON nu.user_id = wd.user_id
-             WHERE wd.game_name IS NOT NULL AND wd.game_name != ''
-               AND wd.source_name IS NOT NULL AND wd.source_name != ''
-               AND wd.create_time >= ? AND wd.create_time < ?
-           ),
+           gameplay AS (${gameplaySource}),
            ranked AS (
              SELECT user_id, game_name, amount, create_time,
                     ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
              FROM gameplay
            )`;
-        const binds = [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
+        const binds = period === "month"
+          ? [newUserCutoff, anchorDate, rangeStart, anchorDate]
+          : [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
         const countRow = await env.daily_records_db
           .prepare(`${CTE} SELECT COUNT(*) as c FROM ranked WHERE rn = 1`)
@@ -3153,7 +3262,53 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       // table on every load (same fix as top-games/highest-bet above).
       const anchorDateExclusive = addDaysGA(anchorDate, 1);
 
+      if (period === "month") {
+        const report = await readMonthReport(env, `reports/platform-analysis/roller-active-${tier}-month.json`, page, pageSize);
+        if (report) {
+          return Response.json({
+            tier, period, date: anchorDate, range: { start: rangeStart, end: anchorDate },
+            page, pageSize, total: report.total, totalPages: report.totalPages,
+            rows: report.rows,
+          });
+        }
+      }
+
       const payload = await cachedJson(env, `platform-analysis:game-activity:roller-active:${tier}:${period}:${anchorDate}:${page}`, async () => {
+        // See top-games' comment above — same wallet_daily_agg fallback for
+        // period=month. avg_bet there is SUM(total_amount)/SUM(bet_count)
+        // (sum-of-sums over sum-of-counts), not AVG(total_amount) — a plain
+        // average of already-daily-summed values would be wrong.
+        const gameplayBlock =
+          period === "month"
+            ? `gameplay AS (
+                 SELECT user_id, game_name, total_amount, bet_count
+                 FROM wallet_daily_agg
+                 WHERE is_bonus = 0 AND d >= ? AND d <= ?
+               ),
+               bet_agg AS (
+                 SELECT user_id, SUM(total_amount) * 1.0 / NULLIF(SUM(bet_count), 0) as avg_bet
+                 FROM gameplay GROUP BY user_id
+               ),
+               top_game AS (
+                 SELECT user_id, game_name,
+                        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(total_amount) DESC) as rn
+                 FROM gameplay GROUP BY user_id, game_name
+               )`
+            : `gameplay AS (
+                 SELECT user_id, game_name, amount
+                 FROM wallet_details
+                 WHERE game_name IS NOT NULL AND game_name != ''
+                   AND source_name IS NOT NULL AND source_name != ''
+                   AND create_time >= ? AND create_time < ?
+               ),
+               bet_agg AS (
+                 SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
+               ),
+               top_game AS (
+                 SELECT user_id, game_name,
+                        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
+                 FROM gameplay GROUP BY user_id, game_name
+               )`;
         const CTE = `WITH elig AS (
              SELECT user_id, total_deposit, user_balance, last_active_time, deposit_count,
                     COALESCE(assigned_agent, 'Unassigned') as agent,
@@ -3164,21 +3319,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
              WHERE total_deposit IS NOT NULL AND deposit_count IS NOT NULL AND last_active_time IS NOT NULL
                AND COALESCE(is_banned, 0) = 0
            ),
-           gameplay AS (
-             SELECT user_id, game_name, amount
-             FROM wallet_details
-             WHERE game_name IS NOT NULL AND game_name != ''
-               AND source_name IS NOT NULL AND source_name != ''
-               AND create_time >= ? AND create_time < ?
-           ),
-           bet_agg AS (
-             SELECT user_id, AVG(amount) as avg_bet FROM gameplay GROUP BY user_id
-           ),
-           top_game AS (
-             SELECT user_id, game_name,
-                    ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY SUM(amount) DESC) as rn
-             FROM gameplay GROUP BY user_id, game_name
-           ),
+           ${gameplayBlock},
            qualified AS (
              SELECT e.user_id, e.vip, e.agent, e.total_deposit, e.user_balance,
                     COALESCE(tg.game_name, '—') as top_game_played
@@ -3192,7 +3333,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
                AND b.avg_bet ${avgBetCmp} 40
                AND e.inactive_days BETWEEN 0 AND ${maxInactiveDays}
            )`;
-        const binds = [rangeStart, anchorDateExclusive];
+        const binds = period === "month" ? [rangeStart, anchorDate] : [rangeStart, anchorDateExclusive];
 
         const countRow = await env.daily_records_db
           .prepare(`${CTE} SELECT COUNT(*) as c FROM qualified`)
