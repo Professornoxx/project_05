@@ -53,6 +53,19 @@ def r2_put_json(bucket: str, key: str, payload: dict) -> None:
     res.raise_for_status()
 
 
+def r2_get_json(bucket: str, key: str) -> list | dict | None:
+    """Reads a JSON object back from an R2 bucket. Returns None on a 404
+    (object doesn't exist) rather than raising, since callers here use this
+    to read archived-logs/ backups that may or may not exist for a given
+    day — a missing archive is an expected, checkable condition, not an
+    error."""
+    res = requests.get(f"{BASE}/r2/buckets/{bucket}/objects/{key}", headers=HEADERS)
+    if res.status_code == 404:
+        return None
+    res.raise_for_status()
+    return res.json()
+
+
 def d1_query(db_id: str, sql: str, params: list | None = None) -> list[dict]:
     """Executes one SQL statement against a D1 database, returns result rows.
     Same underlying SQLite engine and limits as the Workers D1 binding (this
