@@ -33,6 +33,26 @@ def kv_put(key: str, value: str) -> None:
     res.raise_for_status()
 
 
+def r2_put_json(bucket: str, key: str, payload: dict) -> None:
+    """Writes a JSON object to an R2 bucket via Cloudflare's REST API — same
+    account, same style of call as kv_put above, just a different storage
+    product. Used by build_reports.py to publish precomputed Platform
+    Analysis "Month" tab reports for the dashboard Worker's REPORTS binding
+    to read (see worker/wrangler.jsonc's comment on that binding). Requires
+    the CLOUDFLARE_API_TOKEN secret to include R2 write scope — if it
+    doesn't, this raises the same way d1_query/kv_put do on any other API
+    error, so a missing-scope token fails loudly in the Action's logs
+    rather than silently skipping the report.
+    """
+    import json
+    res = requests.put(
+        f"{BASE}/r2/buckets/{bucket}/objects/{key}",
+        headers={**HEADERS, "Content-Type": "application/json"},
+        data=json.dumps(payload),
+    )
+    res.raise_for_status()
+
+
 def d1_query(db_id: str, sql: str, params: list | None = None) -> list[dict]:
     """Executes one SQL statement against a D1 database, returns result rows.
     Same underlying SQLite engine and limits as the Workers D1 binding (this

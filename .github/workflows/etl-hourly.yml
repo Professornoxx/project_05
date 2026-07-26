@@ -52,3 +52,14 @@ jobs:
       - name: Sync wallet (1 IST day, day-based logic)
         if: always()
         run: python sync_wallet.py
+
+      # if: always() — same reasoning as wallet above: this reads whatever
+      # is currently in D1 regardless of whether this run's syncs
+      # succeeded, so it should still attempt to refresh the Platform
+      # Analysis "Month" tab reports rather than skip entirely on an
+      # unrelated sync failure. The dashboard Worker falls back to a live
+      # query if a report object is missing or stale, so a failure here is
+      # a performance regression for that one tab, not an outage.
+      - name: Build Platform Analysis "Month" tab reports
+        if: always()
+        run: python build_reports.py

@@ -37,5 +37,17 @@
     }
   ],
 
+  // Read access to the same bucket worker-upload already writes to (35-day
+  // purge archives under archived-logs/, and now precomputed Platform
+  // Analysis "Month" tab reports under reports/ — see etl/build_reports.py).
+  // This Worker only ever GETs from it, never PUTs; worker-upload keeps the
+  // write side, same read-only-vs-write split as everything else here.
+  "r2_buckets": [
+    {
+      "binding": "REPORTS",
+      "bucket_name": "daily-records-archive"
+    }
+  ],
+
   "vars": {}
 }
