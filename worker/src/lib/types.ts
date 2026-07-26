@@ -7,6 +7,12 @@ export interface Env {
   daily_records_db: D1Database;
   SYNC_KV: KVNamespace;
   UPLOADS?: R2Bucket;
+  // Read-only access (this Worker never writes) to the same bucket UPLOADS
+  // points at, for precomputed Platform Analysis "Month" tab reports under
+  // reports/ — see etl/build_reports.py and wrangler.jsonc's comment on
+  // this binding. Bound only on the dashboard Worker, not worker-upload
+  // (which already has write access via UPLOADS), so this stays optional.
+  REPORTS?: R2Bucket;
   BEARER_TOKEN: string;
   PACKAGE_ID: string;
   SYNC_WINDOW_DAYS: string;
