@@ -89,6 +89,69 @@ def refresh_daily_agg(day: str) -> None:
     print(f"refreshed wallet_daily_agg for {day}")
 
 
+def backfill_daily_agg_from_archive(day: str) -> bool:
+    """Rebuilds wallet_daily_agg for a day whose raw wallet_details rows
+    have already aged out of D1 (see cleanup.ts's 15-day retention on that
+    table) but survive as a JSON archive in R2 — same aggregation as
+    refresh_daily_agg (grouped by user+game+is_bonus, tracking sum/count/
+    max/first/last), computed here in Python from the archived rows
+    instead of via SQL against live wallet_details, since the raw rows no
+    longer exist in D1 to query. One-time recovery tool for days that
+    predate wallet_daily_agg's existence (2026-07-26 and earlier) — not
+    part of the normal hourly flow, which always has live rows to work
+    from via refresh_daily_agg. Returns False (does nothing) if no archive
+    exists for that day, so callers can distinguish "already covered by
+    refresh_daily_agg" from "genuinely no data available."""
+    rows = cf_client.r2_get_json(R2_BUCKET, f"archived-logs/wallet_details-{day}.json")
+    if rows is None:
+        print(f"no archive for {day}, skipping")
+        return False
+
+    groups: dict[tuple, dict] = {}
+    for r in rows:
+        game_name = r.get("game_name")
+        user_id = r.get("user_id")
+        if not game_name or user_id is None:
+            continue
+        is_bonus = 0 if (r.get("source_name") or "").strip() else 1
+        key = (user_id, game_name, is_bonus)
+        amount = r.get("amount") or 0
+        ct = r.get("create_time")
+        g = groups.setdefault(key, {"total": 0.0, "count": 0, "max_amount": None, "max_amount_time": None, "first_time": None, "last_active": None})
+        g["total"] += amount
+        g["count"] += 1
+        if g["max_amount"] is None or amount > g["max_amount"]:
+            g["max_amount"], g["max_amount_time"] = amount, ct
+        if ct and (g["first_time"] is None or ct < g["first_time"]):
+            g["first_time"] = ct
+        if ct and (g["last_active"] is None or ct > g["last_active"]):
+            g["last_active"] = ct
+
+    cf_client.d1_query(DAILY_DB_ID, "DELETE FROM wallet_daily_agg WHERE d = ?", [day])
+    items = list(groups.items())
+    # 10 columns/row. Both 90 and 20 rows/statement hit the SAME "too many
+    # SQL variables at offset 370" error — confirms this is a small, fixed
+    # per-statement ceiling (not scaling with how many rows were
+    # requested), unlike chunkedUpsert.ts's 150-row chunks, which use
+    # env.daily_records_db.batch() (many independent small statements),
+    # not one large multi-VALUES INSERT like this. 9 is the largest chunk
+    # confirmed working for this column count, 2026-07-26.
+    CHUNK = 9
+    for i in range(0, len(items), CHUNK):
+        chunk = items[i:i + CHUNK]
+        placeholders = ",".join(["(?,?,?,?,?,?,?,?,?,?)"] * len(chunk))
+        params = []
+        for (user_id, game_name, is_bonus), g in chunk:
+            params += [day, user_id, game_name, is_bonus, g["total"], g["count"], g["max_amount"], g["max_amount_time"], g["first_time"], g["last_active"]]
+        cf_client.d1_query(
+            DAILY_DB_ID,
+            f"INSERT INTO wallet_daily_agg (d, user_id, game_name, is_bonus, total_amount, bet_count, max_amount, max_amount_time, first_time, last_active) VALUES {placeholders}",
+            params,
+        )
+    print(f"backfilled wallet_daily_agg for {day} from archive: {len(rows)} raw rows -> {len(items)} agg rows")
+    return True
+
+
 def build_bonus_claims(anchor_date: str, range_start: str) -> None:
     """Mirrors /api/dashboard/platform-analysis/bonus-claims (period=month),
     reading from wallet_daily_agg instead of raw wallet_details."""
