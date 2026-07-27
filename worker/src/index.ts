@@ -257,31 +257,35 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
           AND (next_level_min - total_deposit) BETWEEN 1 AND ?`;
 
-      const countRow = await env.daily_records_db
-        .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap)
-        .first<{ c: number }>();
+      const payload = await cachedJson(env, `action-center:vip-near-upgrade:${tier}:${page}:${agentFilter ?? "all"}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`SELECT COUNT(*) as c ${BASE}`)
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap)
+          .first<{ c: number }>();
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `SELECT user_id, total_deposit, agent, current_level, current_level + 1 as next_level,
-                  (next_level_min - total_deposit) as gap,
-                  CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
-           ${BASE}
-           ORDER BY gap ASC LIMIT ? OFFSET ?`
-        )
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `SELECT user_id, total_deposit, agent, current_level, current_level + 1 as next_level,
+                    (next_level_min - total_deposit) as gap,
+                    CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+             ${BASE}
+             ORDER BY gap ASC LIMIT ? OFFSET ?`
+          )
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, maxGap, pageSize, (page - 1) * pageSize)
+          .all();
 
-      const total = countRow?.c ?? 0;
-      return Response.json({
-        tier,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        const total = countRow?.c ?? 0;
+        return {
+          tier,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Action Center section 2: Inactive Users. Same live VIP-bracket
@@ -301,7 +305,13 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
 
       const CURRENT_LEVEL = vipLevelCase("total_deposit");
 
-      const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 10, 180] : [5, 14, 15, 240];
+      // minDays starts one day past Active Users' cutoff (10/15) so the two
+      // lists partition inactive_days disjointly instead of both claiming
+      // the boundary day — a user with inactive_days exactly 10 (or 15)
+      // used to appear on both lists simultaneously, contradicting this
+      // page's own "opposite window" framing of the two panels (fixed
+      // 2026-07-26, confirmed via live audit).
+      const [minLevel, maxLevel, minDays, maxDays] = tier === "low" ? [2, 4, 11, 180] : [5, 14, 16, 240];
 
       const BASE = `FROM (
           SELECT user_id, total_deposit, user_balance, last_active_time, COALESCE(assigned_agent, 'Unassigned') as agent,
@@ -312,30 +322,34 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ?`;
 
-      const countRow = await env.daily_records_db
-        .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays)
-        .first<{ c: number }>();
+      const payload = await cachedJson(env, `action-center:inactive-users:${tier}:${page}:${agentFilter ?? "all"}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`SELECT COUNT(*) as c ${BASE}`)
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays)
+          .first<{ c: number }>();
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days,
-                  substr(last_active_time, 1, 10) as last_active_date
-           ${BASE}
-           ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
-        )
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days,
+                    substr(last_active_time, 1, 10) as last_active_date
+             ${BASE}
+             ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
+          )
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays, pageSize, (page - 1) * pageSize)
+          .all();
 
-      const total = countRow?.c ?? 0;
-      return Response.json({
-        tier,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        const total = countRow?.c ?? 0;
+        return {
+          tier,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Action Center section 3: New Users & Bonuses — Yesterday First Deposit
@@ -398,41 +412,45 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           GROUP BY user_id
         )`;
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM first_deposit_users`)
-        .bind(fromStr, toStr, agentFilter, agentFilter)
-        .first<{ c: number }>();
+      const payload = await cachedJson(env, `action-center:yesterday-first-deposits:${fromStr}:${toStr}:${page}:${agentFilter ?? "all"}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM first_deposit_users`)
+          .bind(fromStr, toStr, agentFilter, agentFilter)
+          .first<{ c: number }>();
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  COALESCE(u.city, f.region, 'Unknown') as region,
-                  COALESCE(d.total_deposit, 0) as total_deposit,
-                  ${CURRENT_LEVEL.replace(/total_deposit/g, "COALESCE(d.total_deposit, 0)")} as current_level,
-                  COALESCE(d.deposit_count, 0) as deposit_count,
-                  COALESCE(w.total_withdrawal, 0) as total_withdrawal,
-                  COALESCE(d.total_deposit, 0) - COALESCE(w.total_withdrawal, 0) as profit_loss
-           FROM first_deposit_users f
-           LEFT JOIN deposit_agg d ON d.user_id = f.user_id
-           LEFT JOIN withdraw_agg w ON w.user_id = f.user_id
-           LEFT JOIN users u ON u.user_id = f.user_id
-           ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
-        )
-        .bind(fromStr, toStr, agentFilter, agentFilter, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT f.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                    COALESCE(u.city, f.region, 'Unknown') as region,
+                    COALESCE(d.total_deposit, 0) as total_deposit,
+                    ${CURRENT_LEVEL.replace(/total_deposit/g, "COALESCE(d.total_deposit, 0)")} as current_level,
+                    COALESCE(d.deposit_count, 0) as deposit_count,
+                    COALESCE(w.total_withdrawal, 0) as total_withdrawal,
+                    COALESCE(d.total_deposit, 0) - COALESCE(w.total_withdrawal, 0) as profit_loss
+             FROM first_deposit_users f
+             LEFT JOIN deposit_agg d ON d.user_id = f.user_id
+             LEFT JOIN withdraw_agg w ON w.user_id = f.user_id
+             LEFT JOIN users u ON u.user_id = f.user_id
+             ORDER BY total_deposit DESC LIMIT ? OFFSET ?`
+          )
+          .bind(fromStr, toStr, agentFilter, agentFilter, pageSize, (page - 1) * pageSize)
+          .all();
 
-      const total = countRow?.c ?? 0;
-      return Response.json({
-        date: fromStr,
-        dateFrom: fromStr,
-        dateTo: toStr,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        const total = countRow?.c ?? 0;
+        return {
+          date: fromStr,
+          dateFrom: fromStr,
+          dateTo: toStr,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // FTD panel 2: No-Return First Deposit Users — same is_first_deposit
@@ -482,34 +500,38 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )`;
       const cteArgs = [windowStartStr, windowEndStr, agentFilter, agentFilter];
 
-      const countRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM no_return`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
+      const payload = await cachedJson(env, `action-center:no-return-first-deposits:${anchorDate}:${page}:${agentFilter ?? "all"}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`${CTE} SELECT COUNT(*) as c FROM no_return`)
+          .bind(...cteArgs)
+          .first<{ c: number }>();
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT n.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent, n.fd_date,
-                  n.fd_amount as total_deposit, COALESCE(w.total_withdrawal, 0) as total_withdrawal
-           FROM no_return n
-           LEFT JOIN users u ON u.user_id = n.user_id
-           LEFT JOIN withdraw_agg w ON w.user_id = n.user_id
-           ORDER BY n.fd_date DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `${CTE}
+             SELECT n.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent, n.fd_date,
+                    n.fd_amount as total_deposit, COALESCE(w.total_withdrawal, 0) as total_withdrawal
+             FROM no_return n
+             LEFT JOIN users u ON u.user_id = n.user_id
+             LEFT JOIN withdraw_agg w ON w.user_id = n.user_id
+             ORDER BY n.fd_date DESC LIMIT ? OFFSET ?`
+          )
+          .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+          .all();
 
-      const total = countRow?.c ?? 0;
-      return Response.json({
-        windowStart: windowStartStr,
-        windowEnd: windowEndStr,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        const total = countRow?.c ?? 0;
+        return {
+          windowStart: windowStartStr,
+          windowEnd: windowEndStr,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Action Center section 4: Active Users. Mirror of section 2 (Inactive
@@ -540,29 +562,33 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )
         WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ?`;
 
-      const countRow = await env.daily_records_db
-        .prepare(`SELECT COUNT(*) as c ${BASE}`)
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays)
-        .first<{ c: number }>();
+      const payload = await cachedJson(env, `action-center:active-users:${tier}:${page}:${agentFilter ?? "all"}`, async () => {
+        const countRow = await env.daily_records_db
+          .prepare(`SELECT COUNT(*) as c ${BASE}`)
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays)
+          .first<{ c: number }>();
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days
-           ${BASE}
-           ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
-        )
-        .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays, pageSize, (page - 1) * pageSize)
-        .all();
+        const rows = await env.daily_records_db
+          .prepare(
+            `SELECT user_id, current_level, total_deposit, user_balance, agent, inactive_days
+             ${BASE}
+             ORDER BY inactive_days DESC LIMIT ? OFFSET ?`
+          )
+          .bind(agentFilter, agentFilter, minLevel, maxLevel, maxDays, pageSize, (page - 1) * pageSize)
+          .all();
 
-      const total = countRow?.c ?? 0;
-      return Response.json({
-        tier,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        rows: rows.results,
+        const total = countRow?.c ?? 0;
+        return {
+          tier,
+          page,
+          pageSize,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / pageSize)),
+          rows: rows.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Action Center (last section): Weekly Cashback Shield. Eligibility
@@ -644,33 +670,41 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )`;
       const cteArgs = [weekStart, weekEnd, weekStart, weekEnd, agentFilter, agentFilter];
 
-      const summaryRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c, COALESCE(SUM(bonus_amount), 0) as total_bonus FROM final`)
-        .bind(...cteArgs)
-        .first<{ c: number; total_bonus: number }>();
-      const total = summaryRow?.c ?? 0;
+      const payload = await cachedJson(
+        env,
+        `action-center:weekly-cashback-shield:${anchorDate}:${page}:${agentFilter ?? "all"}`,
+        async () => {
+          const summaryRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c, COALESCE(SUM(bonus_amount), 0) as total_bonus FROM final`)
+            .bind(...cteArgs)
+            .first<{ c: number; total_bonus: number }>();
+          const total = summaryRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT user_id, agent, vip_level, week_deposit as total_deposit, week_withdraw as total_withdrawal,
-                  user_balance, verified_loss, loss_pct, eligible_pct, bonus_amount
-           FROM final ORDER BY bonus_amount DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+          const rows = await env.daily_records_db
+            .prepare(
+              `${CTE}
+               SELECT user_id, agent, vip_level, week_deposit as total_deposit, week_withdraw as total_withdrawal,
+                      user_balance, verified_loss, loss_pct, eligible_pct, bonus_amount
+               FROM final ORDER BY bonus_amount DESC LIMIT ? OFFSET ?`
+            )
+            .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+            .all();
 
-      return Response.json({
-        date: anchorDate,
-        weekStart,
-        weekEnd,
-        page,
-        pageSize,
-        total,
-        totalPages: Math.max(1, Math.ceil(total / pageSize)),
-        totalBonusPayable: summaryRow?.total_bonus ?? 0,
-        rows: rows.results,
-      });
+          return {
+            date: anchorDate,
+            weekStart,
+            weekEnd,
+            page,
+            pageSize,
+            total,
+            totalPages: Math.max(1, Math.ceil(total / pageSize)),
+            totalBonusPayable: summaryRow?.total_bonus ?? 0,
+            rows: rows.results,
+          };
+        }
+      );
+
+      return Response.json(payload);
     }
 
     // Shared "Amount Range" summary card backend, reused as the last
@@ -898,42 +932,46 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         ELSE 'Other' END`;
       const AVG_MINUTES = `(julianday(result_time) - julianday(create_time)) * 24 * 60`;
 
-      const amountRange = await env.daily_records_db
-        .prepare(
-          `SELECT ${RANGE_CASE} as range, COUNT(*) as count, COUNT(DISTINCT user_id) as users, COALESCE(SUM(amount),0) as total
-           FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause} GROUP BY range`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+      const payload = await cachedJson(env, `deposit-analysis:${date}:${agentFilter ?? "all"}`, async () => {
+        const amountRange = await env.daily_records_db
+          .prepare(
+            `SELECT ${RANGE_CASE} as range, COUNT(*) as count, COUNT(DISTINCT user_id) as users, COALESCE(SUM(amount),0) as total
+             FROM deposits WHERE date(create_time) = ? AND status = 'COMPLETE' ${scopeClause} GROUP BY range`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      const successByRange = await env.daily_records_db
-        .prepare(
-          `SELECT ${RANGE_CASE} as range, COUNT(*) as total,
-                  SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as completed,
-                  AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_minutes
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+        const successByRange = await env.daily_records_db
+          .prepare(
+            `SELECT ${RANGE_CASE} as range, COUNT(*) as total,
+                    SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as completed,
+                    AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_minutes
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      const byChannel = await env.daily_records_db
-        .prepare(
-          `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders,
-                  SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as comp_orders,
-                  COUNT(DISTINCT CASE WHEN status = 'COMPLETE' THEN user_id END) as comp_users,
-                  COALESCE(SUM(CASE WHEN status = 'COMPLETE' THEN amount ELSE 0 END),0) as comp_amount,
-                  AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_mins
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+        const byChannel = await env.daily_records_db
+          .prepare(
+            `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders,
+                    SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as comp_orders,
+                    COUNT(DISTINCT CASE WHEN status = 'COMPLETE' THEN user_id END) as comp_users,
+                    COALESCE(SUM(CASE WHEN status = 'COMPLETE' THEN amount ELSE 0 END),0) as comp_amount,
+                    AVG(CASE WHEN status = 'COMPLETE' AND result_time IS NOT NULL THEN ${AVG_MINUTES} END) as avg_mins
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      return Response.json({
-        date,
-        amountRange: amountRange.results,
-        successByRange: successByRange.results,
-        byChannel: byChannel.results,
+        return {
+          date,
+          amountRange: amountRange.results,
+          successByRange: successByRange.results,
+          byChannel: byChannel.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Deposit hourly analysis (dashboard section 3): hourly success-rate
@@ -963,47 +1001,51 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         ELSE 'Other' END`;
       const IS_SUCCESS = `status = 'COMPLETE'`;
 
-      const byRangeHour = await env.daily_records_db
-        .prepare(
-          `SELECT ${RANGE_CASE} as range, CAST(strftime('%H', create_time) AS INTEGER) as hour,
-                  COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range, hour`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+      const payload = await cachedJson(env, `deposit-hourly-analysis:${date}:${agentFilter ?? "all"}`, async () => {
+        const byRangeHour = await env.daily_records_db
+          .prepare(
+            `SELECT ${RANGE_CASE} as range, CAST(strftime('%H', create_time) AS INTEGER) as hour,
+                    COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range, hour`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      const rangeTotals = await env.daily_records_db
-        .prepare(
-          `SELECT ${RANGE_CASE} as range, COUNT(*) as total_orders
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+        const rangeTotals = await env.daily_records_db
+          .prepare(
+            `SELECT ${RANGE_CASE} as range, COUNT(*) as total_orders
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY range`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      const byChannelHour = await env.daily_records_db
-        .prepare(
-          `SELECT COALESCE(channel, 'Unknown') as channel, CAST(strftime('%H', create_time) AS INTEGER) as hour,
-                  COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel, hour`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+        const byChannelHour = await env.daily_records_db
+          .prepare(
+            `SELECT COALESCE(channel, 'Unknown') as channel, CAST(strftime('%H', create_time) AS INTEGER) as hour,
+                    COUNT(*) as total, SUM(CASE WHEN ${IS_SUCCESS} THEN 1 ELSE 0 END) as success
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel, hour`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      const channelTotals = await env.daily_records_db
-        .prepare(
-          `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders
-           FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
-        )
-        .bind(date, ...scopeBind)
-        .all();
+        const channelTotals = await env.daily_records_db
+          .prepare(
+            `SELECT COALESCE(channel, 'Unknown') as channel, COUNT(*) as total_orders
+             FROM deposits WHERE date(create_time) = ? ${scopeClause} GROUP BY channel ORDER BY total_orders DESC`
+          )
+          .bind(date, ...scopeBind)
+          .all();
 
-      return Response.json({
-        date,
-        byRangeHour: byRangeHour.results,
-        rangeTotals: rangeTotals.results,
-        byChannelHour: byChannelHour.results,
-        channelTotals: channelTotals.results,
+        return {
+          date,
+          byRangeHour: byRangeHour.results,
+          rangeTotals: rangeTotals.results,
+          byChannelHour: byChannelHour.results,
+          channelTotals: channelTotals.results,
+        };
       });
+
+      return Response.json(payload);
     }
 
     // Withdrawal Analysis (dashboard section 4): channel-wise processing
@@ -1034,6 +1076,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         ELSE '>12H' END`;
       const HOURS_BETWEEN = (a: string, b: string) => `(julianday(${b}) - julianday(${a})) * 24`;
 
+      const payload = await cachedJson(env, `withdrawal-analysis:${date}:${agentFilter ?? "all"}`, async () => {
       const channelProcessingTime = await env.daily_records_db
         .prepare(
           `SELECT COALESCE(channel, 'Unknown') as channel,
@@ -1143,7 +1186,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         sevenDays.push({ d: iso, ...(byDay[iso] ?? { under4h: 0, over4h: 0 }) });
       }
 
-      return Response.json({
+      return {
         date,
         channelProcessingTime: channelProcessingTime.results,
         channelCompletionTime: channelCompletionTime.results,
@@ -1152,7 +1195,10 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         completedLast4Days: sevenDays,
         processingByAmountRange: processingByAmountRange.results,
         rangeTotalsForProcessing: rangeTotalsForProcessing.results,
-      });
+      };
+      }, 60);
+
+      return Response.json(payload);
     }
 
     // Withdrawal Analysis Excel exports: transaction-level rows (one per
@@ -1214,20 +1260,29 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       // one — review-aging has no substitute field and returns null.
       const orderNoExpr = subset === "review-aging" ? "NULL" : "w.payment_order_id";
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `SELECT w.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  ${vipLevelCase("u.total_deposit")} as vip_level,
-                  w.amount, COALESCE(w.channel, 'Unknown') as channel, ${orderNoExpr} as order_no,
-                  ROUND(${hoursExpr}, 2) as hours_in_processing
-           FROM withdrawals w LEFT JOIN users u ON u.user_id = w.user_id
-           WHERE ${finalWhere} ${scopeClause}
-           ORDER BY w.create_time DESC LIMIT 5000`
-        )
-        .bind(...binds)
-        .all();
+      const payload = await cachedJson(
+        env,
+        `withdrawal-transactions:${subset}:${date}:${agentFilter ?? "all"}`,
+        async () => {
+          const rows = await env.daily_records_db
+            .prepare(
+              `SELECT w.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                      ${vipLevelCase("u.total_deposit")} as vip_level,
+                      w.amount, COALESCE(w.channel, 'Unknown') as channel, ${orderNoExpr} as order_no,
+                      ROUND(${hoursExpr}, 2) as hours_in_processing
+               FROM withdrawals w LEFT JOIN users u ON u.user_id = w.user_id
+               WHERE ${finalWhere} ${scopeClause}
+               ORDER BY w.create_time DESC LIMIT 5000`
+            )
+            .bind(...binds)
+            .all();
 
-      return Response.json({ date, subset, rows: rows.results });
+          return { date, subset, rows: rows.results };
+        },
+        60
+      );
+
+      return Response.json(payload);
     }
 
     // Analytics page section 1: Region & VIP Deposit Analytics — top 10
@@ -1262,23 +1317,27 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           FROM day_dep d LEFT JOIN users u ON u.user_id = d.user_id
         )`;
 
-      const topRegionsRes = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT region, SUM(day_deposit) as total, COUNT(*) as users
-           FROM merged GROUP BY region ORDER BY total DESC LIMIT 10`
-        )
-        .bind(date, agentFilter, agentFilter)
-        .all<{ region: string; total: number; users: number }>();
+      const payload = await cachedJson(env, `analytics:region-vip-deposit:${date}:${agentFilter ?? "all"}`, async () => {
+        const topRegionsRes = await env.daily_records_db
+          .prepare(
+            `${CTE} SELECT region, SUM(day_deposit) as total, COUNT(*) as users
+             FROM merged GROUP BY region ORDER BY total DESC LIMIT 10`
+          )
+          .bind(date, agentFilter, agentFilter)
+          .all<{ region: string; total: number; users: number }>();
 
-      const byVipLevelRes = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT vip_level as level, SUM(day_deposit) as total, COUNT(*) as users
-           FROM merged GROUP BY vip_level ORDER BY vip_level ASC`
-        )
-        .bind(date, agentFilter, agentFilter)
-        .all<{ level: number; total: number; users: number }>();
+        const byVipLevelRes = await env.daily_records_db
+          .prepare(
+            `${CTE} SELECT vip_level as level, SUM(day_deposit) as total, COUNT(*) as users
+             FROM merged GROUP BY vip_level ORDER BY vip_level ASC`
+          )
+          .bind(date, agentFilter, agentFilter)
+          .all<{ level: number; total: number; users: number }>();
 
-      return Response.json({ date, topRegions: topRegionsRes.results, byVipLevel: byVipLevelRes.results });
+        return { date, topRegions: topRegionsRes.results, byVipLevel: byVipLevelRes.results };
+      });
+
+      return Response.json(payload);
     }
 
     // Analytics page section 2: Reactivation. "Reactivated" = a user
@@ -1335,46 +1394,54 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )`;
       const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, minDays, maxDays, anchorDate, threeDaysAgoStr, anchorDate];
 
-      const cohortCountRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const cohortSize = cohortCountRow?.c ?? 0;
+      const payload = await cachedJson(
+        env,
+        `analytics:reactivation:${tier}:${anchorDate}:${page}:${agentFilter ?? "all"}`,
+        async () => {
+          const cohortCountRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const cohortSize = cohortCountRow?.c ?? 0;
 
-      const reactivatedCountRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const reactivatedTodayCount = reactivatedCountRow?.c ?? 0;
+          const reactivatedCountRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const reactivatedTodayCount = reactivatedCountRow?.c ?? 0;
 
-      const reactivated3DayRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t ON t.user_id = c.user_id`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const reactivated3DayCount = reactivated3DayRow?.c ?? 0;
+          const reactivated3DayRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t ON t.user_id = c.user_id`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const reactivated3DayCount = reactivated3DayRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level, c.inactive_days, t.day_deposit
-           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
-           ORDER BY c.inactive_days DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+          const rows = await env.daily_records_db
+            .prepare(
+              `${CTE}
+               SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level, c.inactive_days, t.day_deposit
+               FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+               ORDER BY c.inactive_days DESC LIMIT ? OFFSET ?`
+            )
+            .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+            .all();
 
-      return Response.json({
-        date: anchorDate,
-        tier,
-        page,
-        pageSize,
-        total: reactivatedTodayCount,
-        totalPages: Math.max(1, Math.ceil(reactivatedTodayCount / pageSize)),
-        rows: rows.results,
-        cohortSize,
-        reactivatedTodayCount,
-        reactivated3DayCount,
-      });
+          return {
+            date: anchorDate,
+            tier,
+            page,
+            pageSize,
+            total: reactivatedTodayCount,
+            totalPages: Math.max(1, Math.ceil(reactivatedTodayCount / pageSize)),
+            rows: rows.results,
+            cohortSize,
+            reactivatedTodayCount,
+            reactivated3DayCount,
+          };
+        }
+      );
+
+      return Response.json(payload);
     }
 
     // Analytics page section 3: VIP Level Upgrade. Same shape as
@@ -1433,55 +1500,63 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       const VIP_AFTER_TODAY = vipLevelCase("(c.total_deposit + t.day_deposit)");
       const VIP_AFTER_3DAY = vipLevelCase("(c.total_deposit + t3.amt)");
 
-      const cohortCountRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const cohortSize = cohortCountRow?.c ?? 0;
+      const payload = await cachedJson(
+        env,
+        `analytics:vip-upgrade:${tier}:${anchorDate}:${page}:${agentFilter ?? "all"}`,
+        async () => {
+          const cohortCountRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const cohortSize = cohortCountRow?.c ?? 0;
 
-      const upgradedTodayCountRow = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
-           WHERE ${VIP_AFTER_TODAY} > c.current_level`
-        )
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const upgradedTodayCount = upgradedTodayCountRow?.c ?? 0;
+          const upgradedTodayCountRow = await env.daily_records_db
+            .prepare(
+              `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+               WHERE ${VIP_AFTER_TODAY} > c.current_level`
+            )
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const upgradedTodayCount = upgradedTodayCountRow?.c ?? 0;
 
-      const upgraded3DayRow = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t3 ON t3.user_id = c.user_id
-           WHERE ${VIP_AFTER_3DAY} > c.current_level`
-        )
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const upgraded3DayCount = upgraded3DayRow?.c ?? 0;
+          const upgraded3DayRow = await env.daily_records_db
+            .prepare(
+              `${CTE} SELECT COUNT(*) as c FROM cohort_filtered c JOIN three_day_dep t3 ON t3.user_id = c.user_id
+               WHERE ${VIP_AFTER_3DAY} > c.current_level`
+            )
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const upgraded3DayCount = upgraded3DayRow?.c ?? 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level as vip_before,
-                  ${VIP_AFTER_TODAY} as vip_after, t.day_deposit,
-                  (c.total_deposit + t.day_deposit) - c.next_level_min as amount_over_minimum
-           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
-           WHERE ${VIP_AFTER_TODAY} > c.current_level
-           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+          const rows = await env.daily_records_db
+            .prepare(
+              `${CTE}
+               SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level as vip_before,
+                      ${VIP_AFTER_TODAY} as vip_after, t.day_deposit,
+                      (c.total_deposit + t.day_deposit) - c.next_level_min as amount_over_minimum
+               FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+               WHERE ${VIP_AFTER_TODAY} > c.current_level
+               ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
+            )
+            .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+            .all();
 
-      return Response.json({
-        date: anchorDate,
-        tier,
-        page,
-        pageSize,
-        total: upgradedTodayCount,
-        totalPages: Math.max(1, Math.ceil(upgradedTodayCount / pageSize)),
-        rows: rows.results,
-        cohortSize,
-        upgradedTodayCount,
-        upgraded3DayCount,
-      });
+          return {
+            date: anchorDate,
+            tier,
+            page,
+            pageSize,
+            total: upgradedTodayCount,
+            totalPages: Math.max(1, Math.ceil(upgradedTodayCount / pageSize)),
+            rows: rows.results,
+            cohortSize,
+            upgradedTodayCount,
+            upgraded3DayCount,
+          };
+        }
+      );
+
+      return Response.json(payload);
     }
 
     // Analytics page section 4 (panel 1): First-Deposit Day-1 Retention.
@@ -1513,46 +1588,54 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )`;
       const cteArgs = [yesterdayStr, agentFilter, agentFilter, anchorDate];
 
-      const cohortCountRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const cohortSize = cohortCountRow?.c ?? 0;
+      const payload = await cachedJson(
+        env,
+        `analytics:day1-retention:${anchorDate}:${page}:${agentFilter ?? "all"}`,
+        async () => {
+          const cohortCountRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const cohortSize = cohortCountRow?.c ?? 0;
 
-      const retainedAggRow = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
-           FROM cohort c JOIN today_dep t ON t.user_id = c.user_id`
-        )
-        .bind(...cteArgs)
-        .first<{ c: number; total_deposit: number }>();
-      const retainedCount = retainedAggRow?.c ?? 0;
-      const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
+          const retainedAggRow = await env.daily_records_db
+            .prepare(
+              `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
+               FROM cohort c JOIN today_dep t ON t.user_id = c.user_id`
+            )
+            .bind(...cteArgs)
+            .first<{ c: number; total_deposit: number }>();
+          const retainedCount = retainedAggRow?.c ?? 0;
+          const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT c.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
-                  t.day_deposit, t.deposit_count,
-                  COALESCE(u.city, c.region, 'Unknown') as region
-           FROM cohort c JOIN today_dep t ON t.user_id = c.user_id
-           LEFT JOIN users u ON u.user_id = c.user_id
-           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+          const rows = await env.daily_records_db
+            .prepare(
+              `${CTE}
+               SELECT c.user_id, COALESCE(u.assigned_agent, 'Unassigned') as agent,
+                      t.day_deposit, t.deposit_count,
+                      COALESCE(u.city, c.region, 'Unknown') as region
+               FROM cohort c JOIN today_dep t ON t.user_id = c.user_id
+               LEFT JOIN users u ON u.user_id = c.user_id
+               ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
+            )
+            .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+            .all();
 
-      return Response.json({
-        date: anchorDate,
-        page,
-        pageSize,
-        total: retainedCount,
-        totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
-        rows: rows.results,
-        cohortSize,
-        retainedCount,
-        avgDeposit,
-      });
+          return {
+            date: anchorDate,
+            page,
+            pageSize,
+            total: retainedCount,
+            totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
+            rows: rows.results,
+            cohortSize,
+            retainedCount,
+            avgDeposit,
+          };
+        }
+      );
+
+      return Response.json(payload);
     }
 
     // Analytics page section 4 (panels 3-4): Premium Active. Cohort = every
@@ -1595,45 +1678,53 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         )`;
       const cteArgs = [agentFilter, agentFilter, minLevel, maxLevel, maxDays, anchorDate];
 
-      const cohortCountRow = await env.daily_records_db
-        .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
-        .bind(...cteArgs)
-        .first<{ c: number }>();
-      const cohortSize = cohortCountRow?.c ?? 0;
+      const payload = await cachedJson(
+        env,
+        `analytics:premium-active:${tier}:${anchorDate}:${page}:${agentFilter ?? "all"}`,
+        async () => {
+          const cohortCountRow = await env.daily_records_db
+            .prepare(`${CTE} SELECT COUNT(*) as c FROM cohort_filtered`)
+            .bind(...cteArgs)
+            .first<{ c: number }>();
+          const cohortSize = cohortCountRow?.c ?? 0;
 
-      const retainedAggRow = await env.daily_records_db
-        .prepare(
-          `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
-           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`
-        )
-        .bind(...cteArgs)
-        .first<{ c: number; total_deposit: number }>();
-      const retainedCount = retainedAggRow?.c ?? 0;
-      const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
+          const retainedAggRow = await env.daily_records_db
+            .prepare(
+              `${CTE} SELECT COUNT(*) as c, COALESCE(SUM(t.day_deposit), 0) as total_deposit
+               FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id`
+            )
+            .bind(...cteArgs)
+            .first<{ c: number; total_deposit: number }>();
+          const retainedCount = retainedAggRow?.c ?? 0;
+          const avgDeposit = retainedCount > 0 ? (retainedAggRow?.total_deposit ?? 0) / retainedCount : 0;
 
-      const rows = await env.daily_records_db
-        .prepare(
-          `${CTE}
-           SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level,
-                  t.day_deposit, t.deposit_count
-           FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
-           ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
-        )
-        .bind(...cteArgs, pageSize, (page - 1) * pageSize)
-        .all();
+          const rows = await env.daily_records_db
+            .prepare(
+              `${CTE}
+               SELECT c.user_id, COALESCE(c.agent, 'Unassigned') as agent, c.current_level,
+                      t.day_deposit, t.deposit_count
+               FROM cohort_filtered c JOIN today_dep t ON t.user_id = c.user_id
+               ORDER BY t.day_deposit DESC LIMIT ? OFFSET ?`
+            )
+            .bind(...cteArgs, pageSize, (page - 1) * pageSize)
+            .all();
 
-      return Response.json({
-        date: anchorDate,
-        tier,
-        page,
-        pageSize,
-        total: retainedCount,
-        totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
-        rows: rows.results,
-        cohortSize,
-        retainedCount,
-        avgDeposit,
-      });
+          return {
+            date: anchorDate,
+            tier,
+            page,
+            pageSize,
+            total: retainedCount,
+            totalPages: Math.max(1, Math.ceil(retainedCount / pageSize)),
+            rows: rows.results,
+            cohortSize,
+            retainedCount,
+            avgDeposit,
+          };
+        }
+      );
+
+      return Response.json(payload);
     }
 
     // Performance page: Monthly Leaderboard & Incentives + Daily/Range
@@ -1663,7 +1754,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       // for all agents, same as the admin view. Confirmed explicitly by
       // the user (2026-07-12): this is a one-page-only exception, every
       // other agent-facing endpoint keeps its normal per-agent scoping.
-      const payload = await cachedJson(env, `performance:${anchorDate}:${rangeParam}`, () => computePerformancePayload(env, anchorDate, rangeParam));
+      const payload = await cachedJson(env, `performance:${anchorDate}:${rangeParam}`, () => computePerformancePayload(env, anchorDate, rangeParam), 600);
       return Response.json(payload);
     }
     async function computePerformancePayload(env: Env, anchorDate: string, rangeParam: string) {
@@ -1717,6 +1808,13 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
         // being slow: it was ~70-80 sequential D1 round-trips per load
         // before (worse on 30/35-day ranges, where retention alone used to
         // loop once per calendar day).
+        //
+        // Reactivation and Premium Active's inactive_days is computed as
+        // of `end` (the selected range's end date), not julianday('now') —
+        // fixed 2026-07-26 so a past date range reports historically
+        // accurate inactivity (as it stood at that range's end) instead of
+        // always using each user's inactivity as of right now regardless
+        // of which range is selected.
         const reactivationTask = Promise.all(([
           ["reactivationLow", 2, 4, 10, 180, 30], ["reactivationHigh", 5, 14, 15, 240, 10],
         ] as [keyof AgentKPIs, number, number, number, number, number][]).map(async ([key, minLevel, maxLevel, minDays, maxDays, target]) => {
@@ -1724,11 +1822,11 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
                  SELECT assigned_agent, ${CURRENT_LEVEL} as current_level,
-                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+                        CAST((julianday(?) - julianday(last_active_time)) AS INTEGER) as inactive_days
                  FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL
                ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN ? AND ? GROUP BY agent`
             )
-            .bind(minLevel, maxLevel, minDays, maxDays)
+            .bind(end, minLevel, maxLevel, minDays, maxDays)
             .all<{ agent: string; c: number }>();
           denRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
@@ -1741,10 +1839,10 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
                FROM users u JOIN range_depositors d ON d.user_id = u.user_id
                WHERE u.total_deposit IS NOT NULL AND u.last_active_time IS NOT NULL
                  AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
-                 AND CAST((julianday('now') - julianday(u.last_active_time)) AS INTEGER) BETWEEN ? AND ?
+                 AND CAST((julianday(?) - julianday(u.last_active_time)) AS INTEGER) BETWEEN ? AND ?
                GROUP BY agent`
             )
-            .bind(start, end, minLevel, maxLevel, minDays, maxDays)
+            .bind(start, end, minLevel, maxLevel, end, minDays, maxDays)
             .all<{ agent: string; c: number }>();
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
@@ -1803,11 +1901,11 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
             .prepare(
               `SELECT COALESCE(assigned_agent,'Unassigned') as agent, COUNT(*) as c FROM (
                  SELECT assigned_agent, ${CURRENT_LEVEL} as current_level,
-                        CAST((julianday('now') - julianday(last_active_time)) AS INTEGER) as inactive_days
+                        CAST((julianday(?) - julianday(last_active_time)) AS INTEGER) as inactive_days
                  FROM users WHERE total_deposit IS NOT NULL AND last_active_time IS NOT NULL AND is_banned = 0
                ) WHERE current_level BETWEEN ? AND ? AND inactive_days BETWEEN 0 AND ? GROUP BY agent`
             )
-            .bind(minLevel, maxLevel, maxDays)
+            .bind(end, minLevel, maxLevel, maxDays)
             .all<{ agent: string; c: number }>();
           cohortRows.results.forEach((r) => { ensure(r.agent)[key].den = r.c; });
 
@@ -1820,10 +1918,10 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
                FROM users u JOIN range_depositors d ON d.user_id = u.user_id
                WHERE u.total_deposit IS NOT NULL AND u.last_active_time IS NOT NULL AND u.is_banned = 0
                  AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
-                 AND CAST((julianday('now') - julianday(u.last_active_time)) AS INTEGER) BETWEEN 0 AND ?
+                 AND CAST((julianday(?) - julianday(u.last_active_time)) AS INTEGER) BETWEEN 0 AND ?
                GROUP BY agent`
             )
-            .bind(start, end, minLevel, maxLevel, maxDays)
+            .bind(start, end, minLevel, maxLevel, end, maxDays)
             .all<{ agent: string; c: number }>();
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));

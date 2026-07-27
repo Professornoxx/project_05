@@ -119,6 +119,31 @@ export const PERFORMANCE_CONTENT_HTML = `
 <script>
 const pfState = { asOfDate: null }; // null = today ("This Month"); set = "Till Yesterday"
 
+// This page's two panels (Performance and Daily Range Performance, separate
+// <script> tags but the same page — see index.ts's composition) both
+// default to /api/dashboard/performance?range=today on initial load, i.e.
+// the exact same URL and server-side cache key. Firing both independently
+// meant each paid the full ~4-5s live-compute cost (confirmed via network
+// waterfall 2026-07-26 — two parallel "performance" fetches, neither able
+// to benefit from the other's cache since both arrived before either
+// finished). This function-scoped (not per-script-tag) global — plain
+// function/var declarations become window properties, visible to the
+// later DAILY_RANGE_PERFORMANCE_CONTENT_HTML script tag too — de-dupes by
+// full URL so a second concurrent call for the identical request reuses
+// the first's in-flight promise instead of firing its own. Deliberately
+// resolves the PARSED body (not the raw Response), since a fetch Response
+// stream can only be read once — sharing the raw Response between two
+// json() callers would break the second one.
+var __pfInFlightRequests = {};
+function pfDedupFetchJson(url) {
+  if (!__pfInFlightRequests[url]) {
+    __pfInFlightRequests[url] = fetch(url)
+      .then(function (res) { return res.json().then(function (data) { return { ok: res.ok, status: res.status, data: data }; }); })
+      .finally(function () { delete __pfInFlightRequests[url]; });
+  }
+  return __pfInFlightRequests[url];
+}
+
 function pfColorForPct(pct) { return pct >= 100 ? '#15803d' : pct >= 60 ? '#c2410c' : '#dc2626'; }
 function pfMedal(i) { return ['🥇', '🥈', '🥉'][i] || (i + 1) + 'th'; }
 function pfTierNote(pct) {
@@ -191,9 +216,9 @@ async function pfLoad() {
   try {
     const params = new URLSearchParams({ range: 'today' });
     if (pfState.asOfDate) params.set('date', pfState.asOfDate);
-    const res = await fetch('/api/dashboard/performance?' + params.toString());
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    const r = await pfDedupFetchJson('/api/dashboard/performance?' + params.toString());
+    const d = r.data;
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
 
     document.getElementById('pfMonthRange').textContent = pfFmtDateLabel(d.monthStart) + ' - ' + pfFmtDateLabel(d.date);
     pfRenderDepartments(d.departments || []);
@@ -341,9 +366,9 @@ async function drLoad() {
   const statusEl = document.getElementById('drStatus');
   statusEl.textContent = 'Loading...';
   try {
-    const res = await fetch('/api/dashboard/performance?range=' + drState.range);
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error || res.statusText);
+    const r = await pfDedupFetchJson('/api/dashboard/performance?range=' + drState.range);
+    const d = r.data;
+    if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
 
     document.getElementById('drDateBadge').textContent = '📅 ' + drFmtDateLabel(d.date);
     drRenderDepartments(d.dailyRangeDepartments || []);
