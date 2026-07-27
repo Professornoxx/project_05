@@ -2266,7 +2266,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2354,7 +2354,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2448,7 +2448,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2510,7 +2510,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           .all();
 
         return { date: anchorDate, by, rows: rows.results };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2621,7 +2621,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           .all();
 
         return { date: anchorDate, period, rangeStart, rangeEnd: anchorDate, rows: rows.results };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2840,7 +2840,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
             totalDepositorCountDay: { target: TARGETS.totalDepositorCountDay, actual: metricsCurrent.totalDepositorCountDay },
           },
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2921,7 +2921,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -2989,7 +2989,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -3092,7 +3092,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           .sort((a, b) => b.total - a.total);
 
         return { mode, date: anchorDate, range: rangeLabel, regions };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -3209,7 +3209,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -3306,7 +3306,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
@@ -3454,7 +3454,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
           page, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)),
           rows: rows.results,
         };
-      }, 600);
+      }, 1800);
 
       return Response.json(payload);
     }
