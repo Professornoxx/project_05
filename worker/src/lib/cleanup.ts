@@ -63,5 +63,17 @@ export async function cleanupOldSyncRuns(env: Env): Promise<{ archived: number; 
     deleted += old.results.length;
   }
 
+  // Expired agent_sessions (see agentAuth.ts) aren't data worth preserving —
+  // just noise past their expires_at — so this skips the archive-then-delete
+  // pattern above and purges them directly. KV's TTL used to do this
+  // automatically before sessions moved to D1 2026-07-28; D1 has no
+  // equivalent auto-expiry, so something has to sweep expired rows.
+  const expiredSessions = await env.daily_records_db
+    .prepare(`DELETE FROM agent_sessions WHERE expires_at < ?`)
+    .bind(new Date().toISOString())
+    .run();
+  perTable["agent_sessions"] = expiredSessions.meta.changes ?? 0;
+  deleted += expiredSessions.meta.changes ?? 0;
+
   return { archived, deleted, perTable };
 }
