@@ -360,6 +360,18 @@ def collect_profile_updates(rows: list[dict], source: str) -> dict[int, dict]:
             if row_time and (entry.get("_wallet_balance_time") is None or row_time > entry["_wallet_balance_time"]):
                 entry["wallet_balance"] = profile["wallet_balance"]
                 entry["_wallet_balance_time"] = row_time
+        # last_active_time: any deposit/withdraw/wallet row is evidence the
+        # user was active at that row's create_time. Track the max seen in
+        # this batch here; update_master_profiles keeps whichever of this
+        # and the existing DB value is larger, so it only ever moves
+        # forward. Previously this column was never written by the ETL at
+        # all after the initial one-time Excel import, so it froze at
+        # import-time values — every "active in the last N days" cohort
+        # (Premium Active KPI cards etc.) silently went to zero once enough
+        # real time passed. See sync_engine.update_master_profiles.
+        row_time = fields.get("create_time")
+        if row_time and (entry.get("last_active_time") is None or row_time > entry["last_active_time"]):
+            entry["last_active_time"] = row_time
     return updates
 
 
@@ -376,29 +388,35 @@ def update_master_profiles(updates: dict[int, dict]) -> int:
         return 0
     now = datetime.now(timezone.utc).isoformat()
     items = list(updates.items())
-    # 6 params/row (user_id + 4 fields + update_time): 16*6=96, under the
+    # 7 params/row (user_id + 5 fields + update_time): 14*7=98, under the
     # ~100 bound-params-per-statement ceiling established elsewhere in this
     # file for single multi-row INSERT statements.
-    BATCH = 16
+    BATCH = 14
     written = 0
     for i in range(0, len(items), BATCH):
         chunk = items[i:i + BATCH]
         values_sql = []
         params = []
         for uid, fields in chunk:
-            values_sql.append("(?, ?, ?, ?, ?, ?)")
+            values_sql.append("(?, ?, ?, ?, ?, ?, ?)")
             params.extend([
                 uid, fields.get("phone"), fields.get("mark"),
-                fields.get("member_level"), fields.get("wallet_balance"), now,
+                fields.get("member_level"), fields.get("wallet_balance"),
+                fields.get("last_active_time"), now,
             ])
         sql = (
-            "INSERT INTO users (user_id, phone, mark, member_level, user_balance, update_time) "
+            "INSERT INTO users (user_id, phone, mark, member_level, user_balance, last_active_time, update_time) "
             f"VALUES {','.join(values_sql)} "
             "ON CONFLICT(user_id) DO UPDATE SET "
             "phone = COALESCE(excluded.phone, users.phone), "
             "mark = COALESCE(excluded.mark, users.mark), "
             "member_level = COALESCE(excluded.member_level, users.member_level), "
             "user_balance = COALESCE(excluded.user_balance, users.user_balance), "
+            "last_active_time = CASE "
+            "  WHEN excluded.last_active_time IS NULL THEN users.last_active_time "
+            "  WHEN users.last_active_time IS NULL THEN excluded.last_active_time "
+            "  WHEN excluded.last_active_time > users.last_active_time THEN excluded.last_active_time "
+            "  ELSE users.last_active_time END, "
             "update_time = excluded.update_time"
         )
         cf_client.d1_query(DAILY_DB_ID, sql, params)
