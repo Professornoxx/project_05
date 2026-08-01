@@ -45,8 +45,14 @@ export async function upsertRowsChunked(
   table: string,
   rows: ParsedRow[],
   env: Env
-): Promise<{ fetched: number; missingBefore: number; upserted: number; userIds: number[] }> {
-  if (rows.length === 0) return { fetched: 0, missingBefore: 0, upserted: 0, userIds: [] };
+): Promise<{
+  fetched: number;
+  missingBefore: number;
+  upserted: number;
+  userIds: number[];
+  userDeltas: Record<number, { amount: number; count: number }>;
+}> {
+  if (rows.length === 0) return { fetched: 0, missingBefore: 0, upserted: 0, userIds: [], userDeltas: {} };
 
   if (rows.length > MAX_ROWS) {
     throw new Error(
@@ -98,6 +104,7 @@ export async function upsertRowsChunked(
 
   const failures: string[] = [];
   let chunksWritten = 0;
+  const userDeltas: Record<number, { amount: number; count: number }> = {};
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     if (result.status === "rejected") {
@@ -110,6 +117,16 @@ export async function upsertRowsChunked(
       continue;
     }
     chunksWritten++;
+    const responseBody = (await result.value.json()) as {
+      written: number;
+      userDeltas?: Record<string, { amount: number; count: number }>;
+    };
+    for (const [userId, d] of Object.entries(responseBody.userDeltas ?? {})) {
+      const entry = userDeltas[Number(userId)] ?? { amount: 0, count: 0 };
+      entry.amount += d.amount;
+      entry.count += d.count;
+      userDeltas[Number(userId)] = entry;
+    }
   }
 
   if (failures.length > 0) {
@@ -125,7 +142,7 @@ export async function upsertRowsChunked(
     .map((r) => Number(r.user_id))
     .filter((id) => Number.isFinite(id));
 
-  return { fetched: rows.length, missingBefore, upserted: rows.length, userIds };
+  return { fetched: rows.length, missingBefore, upserted: rows.length, userIds, userDeltas };
 }
 
 export function tableForSource(source: Exclude<SourceName, "manual_upload">): string {

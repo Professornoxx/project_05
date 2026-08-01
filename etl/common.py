@@ -4,6 +4,7 @@ so both implementations agree on field names and window/date calculations.
 """
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -11,6 +12,8 @@ import pandas as pd
 import cf_client
 
 IST_OFFSET = timedelta(hours=5, minutes=30)
+
+DAILY_DB_ID = os.environ["DAILY_DB_ID"]
 
 ID_FIELD_CANDIDATES = [
     "id", "orderId", "orderNo", "flowId", "recordId", "withdrawId",
@@ -250,14 +253,26 @@ def wallet_window(is_first_run_of_day: bool) -> tuple[str, str]:
 
 
 def get_bearer_token() -> str:
-    stored = cf_client.kv_get("config:bearer_token")
-    if stored:
-        return stored
-    raise RuntimeError("No Bearer Token found in KV (config:bearer_token) — save one via the Configuration page first.")
+    # Reads from D1's app_config table, not KV — the Worker side moved
+    # bearer-token storage there 2026-07-28 (see worker/src/lib/config.ts)
+    # after KV's account-wide 1,000-writes/day quota started getting
+    # exhausted by unrelated cache traffic and blocking token saves. This
+    # function used to read "config:bearer_token" straight from KV; left
+    # unfixed after that migration, it kept silently returning whatever
+    # stale token was last written to KV, causing every sync to fail with
+    # a 401 no matter what token got saved via the Configuration page
+    # (confirmed live 2026-07-28 — Save & Sync succeeded but sync_runs kept
+    # failing on the OLD token because this function never saw the new one).
+    rows = cf_client.d1_query(DAILY_DB_ID, "SELECT value FROM app_config WHERE key = ?", ["bearer_token"])
+    if rows and rows[0].get("value"):
+        return rows[0]["value"]
+    raise RuntimeError("No Bearer Token found in app_config (key='bearer_token') — save one via the Configuration page first.")
 
 
 def get_export_url(source: str) -> str:
-    stored = cf_client.kv_get(f"config:export_url:{source}")
-    if stored:
-        return stored
-    raise RuntimeError(f"No export URL found in KV for {source} (config:export_url:{source}).")
+    # Same D1 migration as get_bearer_token above — export URLs moved off
+    # KV alongside the bearer token.
+    rows = cf_client.d1_query(DAILY_DB_ID, "SELECT value FROM app_config WHERE key = ?", [f"export_url:{source}"])
+    if rows and rows[0].get("value"):
+        return rows[0]["value"]
+    raise RuntimeError(f"No export URL found in app_config for {source} (key='export_url:{source}').")

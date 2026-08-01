@@ -153,6 +153,22 @@ export default {
       if (!body.table || !CHUNK_WRITE_TABLES.has(body.table) || !Array.isArray(body.rows) || !body.synced_at) {
         return Response.json({ error: "invalid chunk payload" }, { status: 400 });
       }
+
+      // Captured BEFORE the upsert below overwrites status, so userDeltas
+      // (computed after) can tell a genuine COMPLETE-transition from a
+      // still-COMPLETE or still-not-COMPLETE row — see isMasterAggregateComplete's
+      // comment for why this exists and what bug it fixes.
+      const existingStatusByKey = new Map<string, string | null>();
+      if (body.table === "deposits" || body.table === "withdrawals") {
+        const keys = body.rows.map((r) => r.record_key);
+        const placeholders = keys.map(() => "?").join(",");
+        const existing = await env.daily_records_db
+          .prepare(`SELECT record_key, status FROM ${body.table} WHERE record_key IN (${placeholders})`)
+          .bind(...keys)
+          .all<{ record_key: string; status: string | null }>();
+        for (const row of existing.results) existingStatusByKey.set(row.record_key, row.status);
+      }
+
       const statements = body.rows.map((r) =>
         env.daily_records_db
           .prepare(
@@ -168,7 +184,22 @@ export default {
           .bind(r.record_key, r.user_id, r.amount, r.status, r.create_time, body.synced_at)
       );
       await env.daily_records_db.batch(statements);
-      return Response.json({ written: statements.length });
+
+      const userDeltas: Record<number, { amount: number; count: number }> = {};
+      if (body.table === "deposits" || body.table === "withdrawals") {
+        for (const r of body.rows) {
+          if (r.user_id === null || r.user_id === undefined) continue;
+          const wasComplete = isMasterAggregateComplete(body.table, existingStatusByKey.get(r.record_key) ?? null);
+          const nowComplete = isMasterAggregateComplete(body.table, r.status);
+          if (wasComplete === nowComplete) continue;
+          const sign = nowComplete ? 1 : -1;
+          const entry = userDeltas[r.user_id] ?? { amount: 0, count: 0 };
+          entry.amount += sign * (r.amount ?? 0);
+          entry.count += sign;
+          userDeltas[r.user_id] = entry;
+        }
+      }
+      return Response.json({ written: statements.length, userDeltas });
     }
 
     if (url.pathname === "/api/sync/trigger" && request.method === "POST") {
