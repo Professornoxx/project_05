@@ -15,9 +15,20 @@ KV_NAMESPACE_ID = os.environ["KV_NAMESPACE_ID"]
 BASE = f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}"
 HEADERS = {"Authorization": f"Bearer {API_TOKEN}"}
 
+# Every call in this file used to have no timeout at all, so a single stalled
+# request (confirmed live 2026-08-07: a wallet sync's D1 writes hung for 20+
+# minutes with the database sitting right at its size cap) blocked the whole
+# GitHub Actions job forever instead of failing and logging an error — and
+# since the hourly workflow runs sequentially, that one hang stalled every
+# later sync too, compounding into hours of dashboard staleness. 30s is
+# generous for a single D1/KV/R2 call; anything slower than that is not
+# going to succeed anyway and should fail fast so the run can log the error
+# and move on to the next source instead of hanging indefinitely.
+REQUEST_TIMEOUT_SECONDS = 30
+
 
 def kv_get(key: str) -> str | None:
-    res = requests.get(f"{BASE}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values/{key}", headers=HEADERS)
+    res = requests.get(f"{BASE}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values/{key}", headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
     if res.status_code == 404:
         return None
     res.raise_for_status()
@@ -29,6 +40,7 @@ def kv_put(key: str, value: str) -> None:
         f"{BASE}/storage/kv/namespaces/{KV_NAMESPACE_ID}/values/{key}",
         headers=HEADERS,
         data=value,
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     res.raise_for_status()
 
@@ -49,6 +61,7 @@ def r2_put_json(bucket: str, key: str, payload: dict) -> None:
         f"{BASE}/r2/buckets/{bucket}/objects/{key}",
         headers={**HEADERS, "Content-Type": "application/json"},
         data=json.dumps(payload),
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     res.raise_for_status()
 
@@ -59,7 +72,7 @@ def r2_get_json(bucket: str, key: str) -> list | dict | None:
     to read archived-logs/ backups that may or may not exist for a given
     day — a missing archive is an expected, checkable condition, not an
     error."""
-    res = requests.get(f"{BASE}/r2/buckets/{bucket}/objects/{key}", headers=HEADERS)
+    res = requests.get(f"{BASE}/r2/buckets/{bucket}/objects/{key}", headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS)
     if res.status_code == 404:
         return None
     res.raise_for_status()
@@ -76,6 +89,7 @@ def d1_query(db_id: str, sql: str, params: list | None = None) -> list[dict]:
         f"{BASE}/d1/database/{db_id}/query",
         headers=HEADERS,
         json={"sql": sql, "params": params or []},
+        timeout=REQUEST_TIMEOUT_SECONDS,
     )
     if not res.ok:
         raise RuntimeError(f"D1 HTTP {res.status_code}: {res.text[:1000]}")
