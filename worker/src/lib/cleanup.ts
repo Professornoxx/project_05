@@ -3,19 +3,20 @@ import type { Env } from "./types";
 const RETENTION_DAYS = 35;
 
 // wallet_details gets its own much shorter retention — it hit D1's 500MB
-// size cap at only ~19 days old (2026-07-26 incident) because it stores
-// every individual bet/bonus event, scaling with total bet COUNT rather
-// than with (users x games). 15 days safely covers everything that still
-// needs raw row-level detail (Search User's 2/7-day gameplay panels,
-// Suspicious Withdrawals' 3-day games count, the Day/Week/15days tabs on
-// Bonus Claims and Game Activity). The Platform Analysis "Month" tab
-// (which needs a real 29-day window) no longer depends on raw
-// wallet_details at all — it reads wallet_daily_agg instead, a ~90x
-// smaller one-row-per-(day,user,game) rollup populated by
-// etl/build_reports.py's refresh_daily_agg(), which gets its own longer
-// retention below specifically so it can hold that full 29-day window
-// (plus buffer) at negligible size cost.
-const WALLET_DETAILS_RETENTION_DAYS = 15;
+// size cap twice now (2026-07-26, then again 2026-08-08 with
+// wallet_details at 2,073,708 rows / ~450MB of ~477MB total, still sitting
+// right at the then-15-day boundary) because it stores every individual
+// bet/bonus event, scaling with total bet COUNT rather than with
+// (users x games). The 2026-08-08 fix moved Game Activity's "15days"
+// period (Top Games/Highest Bet/Roller Active) onto wallet_daily_agg, the
+// same rollup "month" already used — see the gameplaySource/gameplayBlock
+// comments in index.ts. That leaves day/week as the only periods still on
+// raw wallet_details, and those only ever need 7 days back
+// (addDaysGA(anchorDate, -6), inclusive of anchorDate) — plus Search
+// User's 2/7-day gameplay panels and Suspicious Withdrawals' 3-day games
+// count, all comfortably under 7. Bonus Claims never had a 15days period
+// (day/week/month only), so it was unaffected either way.
+const WALLET_DETAILS_RETENTION_DAYS = 7;
 const WALLET_DAILY_AGG_RETENTION_DAYS = 40;
 
 // Every table in the Daily Records DB is a rolling window, not permanent

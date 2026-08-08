@@ -1830,19 +1830,44 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
             .all<{ agent: string; c: number }>();
           denRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
+          // Dormancy here must NOT be judged from the live users.last_active_time
+          // column: the ETL now updates it on every deposit/withdraw/wallet
+          // row (see etl/sync_engine.collect_profile_updates), so the very
+          // deposit being counted as "reactivation" also bumps
+          // last_active_time to today — checking it here would self-erase
+          // the dormancy evidence before this query even runs, forcing the
+          // numerator to always be 0 (confirmed live 2026-08-01). Instead:
+          // classify VIP bracket from total_deposit MINUS this range's
+          // deposit (pre-event state, same fix as VIP Upgrade below) and
+          // classify dormancy from each candidate's real last activity
+          // strictly BEFORE this window, read directly from the source
+          // tables (also pre-event, and small — restricted to just this
+          // range's depositors via the candidates CTE — so this isn't a
+          // full-table scan).
           const numRows = await env.daily_records_db
             .prepare(
-              `WITH range_depositors AS (
-                 SELECT DISTINCT user_id FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL
+              `WITH range_deposits AS (
+                 SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
+               ),
+               candidates AS (
+                 SELECT u.user_id, COALESCE(u.assigned_agent,'Unassigned') as agent
+                 FROM users u JOIN range_deposits d ON d.user_id = u.user_id
+                 WHERE u.total_deposit IS NOT NULL
+                   AND ${CURRENT_LEVEL.replace(/total_deposit/g, "(u.total_deposit - d.amt)")} BETWEEN ? AND ?
+               ),
+               prior AS (
+                 SELECT user_id, MAX(t) as prior_time FROM (
+                   SELECT user_id, create_time as t FROM deposits WHERE user_id IN (SELECT user_id FROM candidates) AND date(create_time) < ?
+                   UNION ALL SELECT user_id, create_time FROM withdrawals WHERE user_id IN (SELECT user_id FROM candidates) AND date(create_time) < ?
+                   UNION ALL SELECT user_id, create_time FROM wallet_details WHERE user_id IN (SELECT user_id FROM candidates) AND date(create_time) < ?
+                 ) GROUP BY user_id
                )
-               SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, COUNT(*) as c
-               FROM users u JOIN range_depositors d ON d.user_id = u.user_id
-               WHERE u.total_deposit IS NOT NULL AND u.last_active_time IS NOT NULL
-                 AND ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} BETWEEN ? AND ?
-                 AND CAST((julianday(?) - julianday(u.last_active_time)) AS INTEGER) BETWEEN ? AND ?
-               GROUP BY agent`
+               SELECT c.agent, COUNT(*) as c
+               FROM candidates c JOIN prior p ON p.user_id = c.user_id
+               WHERE CAST((julianday(?) - julianday(p.prior_time)) AS INTEGER) BETWEEN ? AND ?
+               GROUP BY c.agent`
             )
-            .bind(start, end, minLevel, maxLevel, end, minDays, maxDays)
+            .bind(start, end, minLevel, maxLevel, start, start, start, start, minDays, maxDays)
             .all<{ agent: string; c: number }>();
           numRows.results.forEach((r) => { ensure(r.agent)[key].num = r.c; });
         }));
@@ -1866,20 +1891,33 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
             .all<{ agent: string; c: number }>();
           cohortRows.results.forEach((r) => { if (r.c > 0) ensure(r.agent)[key].den = target * days; });
 
+          // u.total_deposit is a live cumulative column the ETL already
+          // adds each settled deposit's amount into (see
+          // etl/sync_engine.update_master_aggregates), so by the time this
+          // runs it already INCLUDES this range's deposit — it's the
+          // post-event state, not pre-event. The previous version used it
+          // as-is for "current_level" (should be pre-event) AND added
+          // d.amt again on top for "vip_after" (double-counting), so
+          // vip_after ended up inflated far past where a real post-deposit
+          // level would land, making "vip_after > current_level" almost
+          // never true — confirmed live 2026-08-01: a direct query found 6
+          // real level crossings on a day this reported 0. Fix: subtract
+          // d.amt back out for the pre-event bracket, and use
+          // total_deposit as-is (already post-event) for vip_after.
           const numRows = await env.daily_records_db
             .prepare(
               `WITH range_deposits AS (
                  SELECT user_id, SUM(amount) as amt FROM deposits WHERE date(create_time) BETWEEN ? AND ? AND status = 'COMPLETE' AND user_id IS NOT NULL GROUP BY user_id
                )
                SELECT agent, COUNT(*) as c FROM (
-                 SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, u.total_deposit,
-                        ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} as current_level,
-                        ${NEXT_LEVEL_MIN.replace(/total_deposit/g, "u.total_deposit")} as next_level_min,
-                        ${CURRENT_LEVEL.replace(/total_deposit/g, "(u.total_deposit + d.amt)")} as vip_after
+                 SELECT COALESCE(u.assigned_agent,'Unassigned') as agent, (u.total_deposit - d.amt) as pre_total,
+                        ${CURRENT_LEVEL.replace(/total_deposit/g, "(u.total_deposit - d.amt)")} as current_level,
+                        ${NEXT_LEVEL_MIN.replace(/total_deposit/g, "(u.total_deposit - d.amt)")} as next_level_min,
+                        ${CURRENT_LEVEL.replace(/total_deposit/g, "u.total_deposit")} as vip_after
                  FROM users u JOIN range_deposits d ON d.user_id = u.user_id
                  WHERE u.total_deposit IS NOT NULL
                ) WHERE next_level_min IS NOT NULL AND current_level BETWEEN ? AND ?
-                 AND (next_level_min - total_deposit) BETWEEN 1 AND ? AND vip_after > current_level
+                 AND (next_level_min - pre_total) BETWEEN 1 AND ? AND vip_after > current_level
                GROUP BY agent`
             )
             .bind(start, end, minLevel, maxLevel, maxGap)
@@ -3150,14 +3188,15 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
 
       const payload = await cachedJson(env, `platform-analysis:game-activity:top-games:${period}:${anchorDate}:${page}`, async () => {
         // period=month reaches here only if the precomputed R2 report was
-        // unavailable — this fallback reads wallet_daily_agg instead of
-        // raw wallet_details for that case specifically, since raw
-        // wallet_details only retains WALLET_DETAILS_RETENTION_DAYS (15,
-        // see cleanup.ts) and would silently return an incomplete 29-day
-        // "month" result otherwise. day/week/15days stay on raw
-        // wallet_details as before — those windows are well within 15 days.
+        // unavailable. 15days now reads from wallet_daily_agg too — it
+        // used to stay on raw wallet_details since that table retained a
+        // full 15-day window, but wallet_details' own retention had to be
+        // shortened below 15 days to stay under D1's size cap (recurring
+        // "Exceeded maximum DB size" outages, most recently 2026-08-08 —
+        // see cleanup.ts), so day/week (short, recent windows) are the only
+        // periods still on raw wallet_details now.
         const gameplaySource =
-          period === "month"
+          period === "month" || period === "15days"
             ? `SELECT wa.user_id, wa.game_name, wa.total_amount as amount, wa.last_active as create_time
                FROM wallet_daily_agg wa
                JOIN new_users nu ON nu.user_id = wa.user_id
@@ -3182,7 +3221,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
              SELECT user_id, game_name, SUM(amount) as total_bet, MAX(create_time) as last_active
              FROM gameplay GROUP BY user_id, game_name
            )`;
-        const binds = period === "month"
+        const binds = period === "month" || period === "15days"
           ? [newUserCutoff, anchorDate, rangeStart, anchorDate]
           : [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
@@ -3247,12 +3286,13 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       }
 
       const payload = await cachedJson(env, `platform-analysis:game-activity:highest-bet:${period}:${anchorDate}:${page}`, async () => {
-        // See top-games' identical comment above — same wallet_daily_agg
-        // fallback for period=month, using its already-tracked per-day
-        // max_amount/max_amount_time rather than re-deriving a max from a
-        // sum (which total_amount is).
+        // See top-games' comment above — 15days now shares month's
+        // wallet_daily_agg fallback (wallet_details' retention had to be
+        // shortened below 15 days, see cleanup.ts), using its already-
+        // tracked per-day max_amount/max_amount_time rather than re-
+        // deriving a max from a sum (which total_amount is).
         const gameplaySource =
-          period === "month"
+          period === "month" || period === "15days"
             ? `SELECT wa.user_id, wa.game_name, wa.max_amount as amount, wa.max_amount_time as create_time
                FROM wallet_daily_agg wa
                JOIN new_users nu ON nu.user_id = wa.user_id
@@ -3278,7 +3318,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
                     ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY amount DESC, create_time DESC) as rn
              FROM gameplay
            )`;
-        const binds = period === "month"
+        const binds = period === "month" || period === "15days"
           ? [newUserCutoff, anchorDate, rangeStart, anchorDate]
           : [newUserCutoff, anchorDate, rangeStart, anchorDateExclusive];
 
@@ -3372,12 +3412,13 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
       }
 
       const payload = await cachedJson(env, `platform-analysis:game-activity:roller-active:${tier}:${period}:${anchorDate}:${page}`, async () => {
-        // See top-games' comment above — same wallet_daily_agg fallback for
-        // period=month. avg_bet there is SUM(total_amount)/SUM(bet_count)
-        // (sum-of-sums over sum-of-counts), not AVG(total_amount) — a plain
-        // average of already-daily-summed values would be wrong.
+        // See top-games' comment above — 15days now shares month's
+        // wallet_daily_agg fallback. avg_bet there is
+        // SUM(total_amount)/SUM(bet_count) (sum-of-sums over sum-of-
+        // counts), not AVG(total_amount) — a plain average of already-
+        // daily-summed values would be wrong.
         const gameplayBlock =
-          period === "month"
+          period === "month" || period === "15days"
             ? `gameplay AS (
                  SELECT user_id, game_name, total_amount, bet_count
                  FROM wallet_daily_agg
@@ -3431,7 +3472,7 @@ const handleFetch = async (request: Request, env: Env, ctx: ExecutionContext): P
                AND b.avg_bet ${avgBetCmp} 40
                AND e.inactive_days BETWEEN 0 AND ${maxInactiveDays}
            )`;
-        const binds = period === "month" ? [rangeStart, anchorDate] : [rangeStart, anchorDateExclusive];
+        const binds = period === "month" || period === "15days" ? [rangeStart, anchorDate] : [rangeStart, anchorDateExclusive];
 
         const countRow = await env.daily_records_db
           .prepare(`${CTE} SELECT COUNT(*) as c FROM qualified`)
