@@ -42,6 +42,13 @@ import common
 DAILY_DB_ID = os.environ["DAILY_DB_ID"]
 R2_BUCKET = "daily-records-archive"
 
+# Sentinel game_name for wallet_details rows with a blank/NULL game_name —
+# wallet_daily_agg.game_name is NOT NULL (part of its primary key), so these
+# still-valid rows need a real value instead of being dropped. See
+# refresh_daily_agg's docstring. Every per-game/per-bonus-category report
+# below must exclude this category explicitly.
+NO_GAME_NAME = "(no game)"
+
 VIP_CASE = """CASE
     WHEN {expr} < 100 THEN 0 WHEN {expr} < 600 THEN 1 WHEN {expr} < 5600 THEN 2
     WHEN {expr} < 15600 THEN 3 WHEN {expr} < 95600 THEN 4 WHEN {expr} < 295600 THEN 5
@@ -62,18 +69,33 @@ def refresh_daily_agg(day: str) -> None:
     than incrementing — matches how wallet syncs themselves re-fetch the
     same day repeatedly until it closes. max_amount_time is picked via a
     ranked subquery (not a plain MAX(create_time), which would give the
-    LATEST bet's time, not the time of the LARGEST bet)."""
+    LATEST bet's time, not the time of the LARGEST bet).
+
+    Rows with a blank/NULL game_name used to be dropped entirely (the old
+    WHERE required game_name NOT NULL/!= ''), which silently undercounted
+    total wallet activity in this table — confirmed 2026-08-21: 511 of
+    2026-08-20's distinct wallet_details users had ONLY blank-game_name
+    rows that day, invisible to any query reading this rollup instead of
+    raw wallet_details. Those rows are now kept under the NO_GAME_NAME
+    sentinel category (game_name is NOT NULL in the schema, so blank/NULL
+    both need a real value) instead of being discarded, so this table's
+    per-day totals now match wallet_details' exactly. Every consumer that
+    reads is_bonus-scoped per-game data (Bonus Claims/Top Games/Highest
+    Bet/Roller Active, here and in worker/src/index.ts) must exclude
+    NO_GAME_NAME explicitly — those features are about real games/bonus
+    categories, not generic wallet events, same as their raw-table queries
+    already required game_name to be populated."""
     cf_client.d1_query(DAILY_DB_ID, "DELETE FROM wallet_daily_agg WHERE d = ?", [day])
-    sql = """WITH ranked AS (
-        SELECT user_id, game_name,
+    sql = f"""WITH ranked AS (
+        SELECT user_id, COALESCE(NULLIF(game_name, ''), '{NO_GAME_NAME}') as game_name,
                CASE WHEN source_name IS NULL OR source_name = '' THEN 1 ELSE 0 END as is_bonus,
                amount, create_time,
                ROW_NUMBER() OVER (
-                 PARTITION BY user_id, game_name, CASE WHEN source_name IS NULL OR source_name = '' THEN 1 ELSE 0 END
+                 PARTITION BY user_id, COALESCE(NULLIF(game_name, ''), '{NO_GAME_NAME}'), CASE WHEN source_name IS NULL OR source_name = '' THEN 1 ELSE 0 END
                  ORDER BY amount DESC, create_time DESC
                ) as rn
         FROM wallet_details
-        WHERE date(create_time) = ? AND game_name IS NOT NULL AND game_name != '' AND user_id IS NOT NULL
+        WHERE date(create_time) = ? AND user_id IS NOT NULL
       ),
       agg AS (
         SELECT user_id, game_name, is_bonus,
@@ -109,9 +131,9 @@ def backfill_daily_agg_from_archive(day: str) -> bool:
 
     groups: dict[tuple, dict] = {}
     for r in rows:
-        game_name = r.get("game_name")
+        game_name = r.get("game_name") or NO_GAME_NAME
         user_id = r.get("user_id")
-        if not game_name or user_id is None:
+        if user_id is None:
             continue
         is_bonus = 0 if (r.get("source_name") or "").strip() else 1
         key = (user_id, game_name, is_bonus)
@@ -155,12 +177,12 @@ def backfill_daily_agg_from_archive(day: str) -> bool:
 def build_bonus_claims(anchor_date: str, range_start: str) -> None:
     """Mirrors /api/dashboard/platform-analysis/bonus-claims (period=month),
     reading from wallet_daily_agg instead of raw wallet_details."""
-    sql = """WITH bonus_claims AS (
+    sql = f"""WITH bonus_claims AS (
         SELECT user_id, game_name as category,
                MIN(first_time) as first_claim_time,
                SUM(bet_count) as claim_count, SUM(total_amount) as claim_amount
         FROM wallet_daily_agg
-        WHERE is_bonus = 1 AND d BETWEEN ? AND ?
+        WHERE is_bonus = 1 AND game_name != '{NO_GAME_NAME}' AND d BETWEEN ? AND ?
         GROUP BY user_id, game_name
       ),
       category_totals AS (
@@ -212,7 +234,7 @@ def build_top_games(anchor_date: str, new_user_cutoff: str, range_start: str) ->
         SELECT wa.user_id, wa.game_name, SUM(wa.total_amount) as total_bet, MAX(wa.last_active) as last_active
         FROM wallet_daily_agg wa
         JOIN new_users nu ON nu.user_id = wa.user_id
-        WHERE wa.is_bonus = 0 AND wa.d BETWEEN ? AND ?
+        WHERE wa.is_bonus = 0 AND wa.game_name != '{NO_GAME_NAME}' AND wa.d BETWEEN ? AND ?
         GROUP BY wa.user_id, wa.game_name
       )
       SELECT a.user_id, a.game_name, a.total_bet, a.last_active,
@@ -241,7 +263,7 @@ def build_highest_bet(anchor_date: str, new_user_cutoff: str, range_start: str) 
                ROW_NUMBER() OVER (PARTITION BY wa.user_id ORDER BY wa.max_amount DESC, wa.max_amount_time DESC) as rn
         FROM wallet_daily_agg wa
         JOIN new_users nu ON nu.user_id = wa.user_id
-        WHERE wa.is_bonus = 0 AND wa.d BETWEEN ? AND ?
+        WHERE wa.is_bonus = 0 AND wa.game_name != '{NO_GAME_NAME}' AND wa.d BETWEEN ? AND ?
       )
       SELECT r.user_id, r.game_name, r.amount as highest_bet, r.create_time as last_active,
              {VIP_CASE.format(expr="COALESCE(u.total_deposit, 0)")} as vip,
@@ -285,7 +307,7 @@ def build_roller_active(tier: str, anchor_date: str, range_start: str) -> None:
       gameplay AS (
         SELECT user_id, game_name, total_amount, bet_count
         FROM wallet_daily_agg
-        WHERE is_bonus = 0 AND d BETWEEN ? AND ?
+        WHERE is_bonus = 0 AND game_name != '{NO_GAME_NAME}' AND d BETWEEN ? AND ?
       ),
       bet_agg AS (
         SELECT user_id, SUM(total_amount) * 1.0 / NULLIF(SUM(bet_count), 0) as avg_bet
